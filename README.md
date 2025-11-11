@@ -184,7 +184,42 @@ The Memory node includes OpenTelemetry instrumentation for distributed tracing. 
 
 ## Publishing to npm
 
-When ready to publish:
+### Automated Publishing with GitHub Actions
+
+This distribution includes a GitHub Actions workflow (`.github/workflows/publish.yml`) that automatically publishes to npm when you push a version tag:
+
+**Setup (one-time):**
+
+1. Create npm token at <https://www.npmjs.com/settings/[your-username]/tokens>
+   - Token type: "Automation" or "Publish"
+   - Copy the token
+
+2. Add token as GitHub repository secret:
+   - Go to repository Settings > Secrets and variables > Actions
+   - Click "New repository secret"
+   - Name: `NPM_TOKEN`
+   - Value: (paste your npm token)
+
+**To publish a new version:**
+
+```bash
+# Update version in package.json
+npm version patch  # or minor, major
+
+# Push the tag (this triggers the workflow)
+git push origin v1.0.1
+```
+
+The workflow will:
+
+- ✅ Verify package.json version matches the tag
+- ✅ Create package tarball
+- ✅ Publish to npm with provenance
+- ✅ Create GitHub release with installation instructions
+
+### Manual Publishing
+
+If you prefer to publish manually:
 
 ```bash
 # Test the package
@@ -207,5 +242,6 @@ npm publish --registry https://your-registry.com
 ## Support
 
 For issues or questions:
+
 - GitHub Issues: [Your repository URL]
-- MemMachine Docs: https://docs.memmachine.ai/
+- [MemMachine Docs](https://docs.memmachine.ai/)

@@ -1,11 +1,11 @@
 {
   "name": "@memmachine/n8n-nodes-memmachine",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "n8n community node for MemMachine conversational memory integration with AI Agents",
   "main": "dist/index.js",
   "author": {
-    "name": "QNIB MemVerge",
-    "email": "contact@memverge.com"
+    "name": "MemVerge Inc.",
+    "email": "info@memverge.com"
   },
   "license": "MIT",
   "keywords": [
@@ -19,9 +19,9 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/qnib-memverge/n8n-nodes-memory.git"
+    "url": "git+https://github.com/MemMachine/n8n-nodes-memmachine"
   },
-  "homepage": "https://github.com/qnib-memverge/n8n-nodes-memory",
+  "homepage": "https://memmachine.ai",
   "n8n": {
     "n8nNodesApiVersion": 1,
     "credentials": [
