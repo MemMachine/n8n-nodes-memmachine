@@ -1,18 +1,14 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MemMachineMemory = void 0;
-const chat_memory_1 = require("@langchain/community/memory/chat_memory");
-const messages_1 = require("@langchain/core/messages");
 const categorizeMemories_1 = require("./utils/categorizeMemories");
 const renderTemplate_1 = require("./utils/renderTemplate");
-class MemMachineMemory extends chat_memory_1.BaseChatMemory {
+class MemMachineMemory {
     config;
+    returnMessages = true;
+    inputKey = 'input';
+    outputKey = 'output';
     constructor(config) {
-        super({
-            returnMessages: true,
-            inputKey: 'input',
-            outputKey: 'output',
-        });
         this.config = {
             ...config,
             contextWindowLength: config.contextWindowLength || 10,
@@ -347,7 +343,11 @@ class MemMachineMemory extends chat_memory_1.BaseChatMemory {
         console.log('[MemMachineMemory] Templated context length:', contextText.length);
         return {
             chat_history: [
-                new messages_1.SystemMessage(contextText),
+                {
+                    type: 'system',
+                    content: contextText,
+                    additional_kwargs: {},
+                },
             ],
         };
     }

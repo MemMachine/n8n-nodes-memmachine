@@ -1,18 +1,23 @@
 /**
  * MemMachine Memory Integration for n8n AI Agents
  * 
- * Implements LangChain's BaseChatMemory interface to provide conversation memory
- * for AI Agents using MemMachine's cloud API as the storage backend.
+ * Provides conversation memory for AI Agents using MemMachine's cloud API as the storage backend.
+ * Compatible with n8n's AI Agent memory interface without external dependencies.
  */
 
-import { BaseChatMemory } from '@langchain/community/memory/chat_memory';
-import type { InputValues, MemoryVariables } from '@langchain/core/memory';
-import type { BaseMessage } from '@langchain/core/messages';
-import { SystemMessage } from '@langchain/core/messages';
 import { categorizeMemories, type EpisodicMemoryItem } from './utils/categorizeMemories';
 import { renderTemplate, type ProfileMemoryFacts } from './utils/renderTemplate';
 import { MemoryTracer } from './utils/tracer';
-// HumanMessage and AIMessage will be used in Phase 4 for message type conversion
+
+// Type definitions compatible with n8n AI Agent expectations
+type InputValues = Record<string, any>;
+type MemoryVariables = Record<string, any>;
+
+interface BaseMessage {
+  type: string;
+  content: string;
+  additional_kwargs?: Record<string, any>;
+}
 
 /**
  * Configuration interface for MemMachineMemory
@@ -63,22 +68,20 @@ export interface MemMachineMemoryConfig {
 }
 
 /**
- * LangChain memory implementation backed by MemMachine API
+ * Memory implementation backed by MemMachine API
  * 
- * Extends BaseChatMemory to provide the interface that
- * n8n AI Agents expect for conversation history management.
+ * Provides the interface that n8n AI Agents expect for conversation history management.
+ * Compatible with n8n's memory interface without external dependencies.
  */
-export class MemMachineMemory extends BaseChatMemory {
+export class MemMachineMemory {
   private config: MemMachineMemoryConfig;
   
+  // Properties expected by n8n AI Agent memory interface
+  public returnMessages = true;
+  public inputKey = 'input';
+  public outputKey = 'output';
+  
   constructor(config: MemMachineMemoryConfig) {
-    // Initialize BaseChatMemory with standard LangChain configuration
-    super({
-      returnMessages: true,
-      inputKey: 'input',
-      outputKey: 'output',
-    });
-    
     // Store MemMachine-specific configuration
     this.config = {
       ...config,
@@ -92,7 +95,7 @@ export class MemMachineMemory extends BaseChatMemory {
   }
   
   /**
-   * Memory key for chat history
+   * Memory key for chat history (expected by n8n AI Agents)
    */
   get memoryKeys() {
     return ['chat_history'];
@@ -534,10 +537,14 @@ export class MemMachineMemory extends BaseChatMemory {
 
     console.log('[MemMachineMemory] Templated context length:', contextText.length);
 
-    // Return formatted context as a system message
+    // Return formatted context as a system message (n8n compatible format)
     return {
       chat_history: [
-        new SystemMessage(contextText),
+        {
+          type: 'system',
+          content: contextText,
+          additional_kwargs: {},
+        } as BaseMessage,
       ],
     };
   }

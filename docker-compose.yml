@@ -13,6 +13,7 @@ services:
       - N8N_SECURE_COOKIE=false
       # Allow custom nodes from local directory
       - N8N_CUSTOM_EXTENSIONS=/data/nodes
+      - N8N_COMMUNITY_PACKAGES_ENABLED=true  
       # Jaeger tracing configuration
       - JAEGER_AGENT_HOST=jaeger
       - JAEGER_AGENT_PORT=6831

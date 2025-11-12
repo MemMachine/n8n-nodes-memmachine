@@ -1,6 +1,6 @@
-import { BaseChatMemory } from '@langchain/community/memory/chat_memory';
-import type { InputValues, MemoryVariables } from '@langchain/core/memory';
 import { MemoryTracer } from './utils/tracer';
+type InputValues = Record<string, any>;
+type MemoryVariables = Record<string, any>;
 export interface MemMachineMemoryConfig {
     apiUrl: string;
     apiKey?: string;
@@ -20,8 +20,11 @@ export interface MemMachineMemoryConfig {
     };
     tracer?: MemoryTracer;
 }
-export declare class MemMachineMemory extends BaseChatMemory {
+export declare class MemMachineMemory {
     private config;
+    returnMessages: boolean;
+    inputKey: string;
+    outputKey: string;
     constructor(config: MemMachineMemoryConfig);
     get memoryKeys(): string[];
     loadMemoryVariables(_values: InputValues): Promise<MemoryVariables>;
@@ -29,4 +32,5 @@ export declare class MemMachineMemory extends BaseChatMemory {
     private storeMessage;
     private formatTemplatedMemory;
 }
+export {};
 //# sourceMappingURL=MemMachineMemory.d.ts.map

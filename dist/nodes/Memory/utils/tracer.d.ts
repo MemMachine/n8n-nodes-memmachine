@@ -1,25 +1,29 @@
-import type { TracingConfig, SpanOptions } from './tracingConfig';
+export interface TracingConfig {
+    enabled?: boolean;
+    exporterType?: 'jaeger' | 'otlp-grpc' | 'otlp-http' | 'console';
+    endpoint?: string;
+    serviceName?: string;
+    protocol?: 'http' | 'udp' | 'grpc';
+}
+export interface SpanOptions {
+    attributes?: Record<string, string | number | boolean>;
+    parentSpan?: any;
+}
 export declare class MemoryTracer {
-    private provider;
-    private tracer;
-    private config;
-    initialize(config: TracingConfig): void;
-    private createExporter;
-    private normalizeOTLPEndpoint;
-    private normalizeGRPCEndpoint;
-    isEnabled(): boolean;
-    startSpan(name: string, options?: SpanOptions): any;
-    endSpan(span: any): void;
-    endSpanWithError(span: any, error: Error | string): void;
-    addAttributes(span: any, attributes: Record<string, string | number | boolean>): void;
-    addEvent(span: any, name: string, attributes?: Record<string, string | number | boolean>): void;
-    createChildSpan(parent: any, name: string, options?: Omit<SpanOptions, 'parent'>): any;
-    extractContext(metadata: any): any;
-    injectContext(span: any): any;
-    flush(): Promise<void>;
+    private enabled;
+    constructor(_config?: TracingConfig);
+    initialize(_config: TracingConfig): void;
+    startSpan(_name: string, _options?: SpanOptions): any;
+    endSpan(_span: any): void;
+    endSpanWithError(_span: any, _error: Error): void;
+    recordException(_span: any, _error: Error): void;
+    setSpanStatus(_span: any, _status: string): void;
+    setAttribute(_span: any, _key: string, _value: string | number | boolean): void;
+    setAttributes(_span: any, _attributes: Record<string, string | number | boolean>): void;
+    addAttributes(_span: any, _attributes: Record<string, string | number | boolean>): void;
+    addEvent(_span: any, _name: string, _attributes?: Record<string, string | number | boolean>): void;
     shutdown(): Promise<void>;
+    isEnabled(): boolean;
 }
 export declare function withSpan<T>(tracer: MemoryTracer, name: string, operation: (span: any) => Promise<T>, options?: SpanOptions): Promise<T>;
-export { TracingConfig, SpanOptions } from './tracingConfig';
-export { SAFE_SPAN_ATTRIBUTES, SensitiveDataSpanProcessor } from './spanProcessor';
 //# sourceMappingURL=tracer.d.ts.map
