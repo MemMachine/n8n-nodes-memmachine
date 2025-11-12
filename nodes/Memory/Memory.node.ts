@@ -1056,6 +1056,18 @@ export class MemMachine implements INodeType {
    * Called when node is connected to an AI Agent's Memory port
    */
   async supplyData(this: ISupplyDataFunctions, itemIndex: number): Promise<SupplyData> {
+    // Initialize cloud tracer for AI Agent mode (outside try block for error handling)
+    const tracingEnabled = this.getNodeParameter('tracingEnabled', itemIndex, false) as boolean;
+    const cloudTracer = new MemoryTracer({
+      enabled: tracingEnabled,
+      format: this.getNodeParameter('traceFormat', itemIndex, 'json') as 'json' | 'human',
+      verbosity: this.getNodeParameter('traceVerbosity', itemIndex, 'minimal') as 'minimal' | 'normal' | 'verbose',
+      maxEntrySize: 10240, // 10KB per FR-010
+    });
+
+    let sessionId = '';
+    let traceId = '';
+
     try {
       // Validate mode
       const mode = this.getNodeParameter('mode', itemIndex) as string;
@@ -1068,7 +1080,7 @@ export class MemMachine implements INodeType {
       }
 
       // Extract session context parameters
-      const sessionId = this.getNodeParameter('sessionId', itemIndex) as string;
+      sessionId = this.getNodeParameter('sessionId', itemIndex) as string;
       const groupId = this.getNodeParameter('groupId', itemIndex, 'default') as string;
       const agentId = this.getNodeParameter('agentId', itemIndex) as string;
       const userId = this.getNodeParameter('userId', itemIndex) as string;
@@ -1099,8 +1111,25 @@ export class MemMachine implements INodeType {
         );
       }
 
-      // Legacy tracer (no-op, kept for backward compatibility)
-      const tracer: MemoryTracer | undefined = undefined;
+      // Start trace for AI Agent memory initialization
+      if (tracingEnabled) {
+        traceId = cloudTracer.startOperation('store', {
+          mode: 'ai_agent_memory',
+          sessionId: sessionId.trim(),
+          groupId,
+          agentId: agentIdArray.join(','),
+          userId: userIdArray.join(','),
+          contextWindowLength,
+          enableTemplate,
+          historyCount,
+          shortTermCount,
+        });
+      }
+
+      // Pass both tracers - cloud tracer for parent/child spans, legacy for compatibility
+      const legacyTracer: MemoryTracer | undefined = undefined;
+      const exportToJaeger = this.getNodeParameter('exportToJaeger', itemIndex, false) as boolean;
+      const jaegerEndpoint = this.getNodeParameter('jaegerOtlpEndpoint', itemIndex, 'http://jaeger:4318/v1/traces') as string;
 
       // Create MemMachineMemory instance with configuration
       const memory = new MemMachineMemory({
@@ -1115,7 +1144,11 @@ export class MemMachine implements INodeType {
         contextTemplate: enableTemplate ? contextTemplate : undefined,
         historyCount,
         shortTermCount,
-        tracer,
+        tracer: legacyTracer,
+        cloudTracer: tracingEnabled ? cloudTracer : undefined,
+        parentTraceId: tracingEnabled ? traceId : undefined,
+        exportToJaeger: tracingEnabled && exportToJaeger,
+        jaegerEndpoint: jaegerEndpoint,
         logger: {
           info: (message: string, ...args: any[]) => {
             console.log(`[MemMachineMemory] ${message}`, ...args);
@@ -1129,16 +1162,41 @@ export class MemMachine implements INodeType {
         },
       });
 
+      // Note: Don't complete parent span here - it stays open for the lifecycle of the memory instance
+      // Child spans (loadMemoryVariables, saveContext) will be linked to this parent
+      console.log('[MemMachine] supplyData - Parent span started', {
+        traceId,
+        sessionId: sessionId.trim(),
+        tracingEnabled,
+      });
+
       // Return memory instance wrapped in SupplyData format
       console.log('[MemMachine] supplyData - Returning memory instance', {
         sessionId: sessionId.trim(),
         memoryType: memory.constructor.name,
       });
       
-      return {
+      // Build response with traces if enabled
+      // Note: Don't export traces here - they will be exported by child operations
+      const response: SupplyData = {
         response: memory,
       };
+
+      return response;
     } catch (error) {
+      // Complete trace on error
+      if (tracingEnabled && traceId) {
+        cloudTracer.completeOperation(traceId, {
+          success: false,
+          error: (error as Error).message,
+          metadata: {
+            mode: 'ai_agent_memory',
+            errorType: error instanceof NodeOperationError ? 'NodeOperationError' : 'Error',
+            sessionId: sessionId ? sessionId.trim() : 'unknown',
+          },
+        });
+      }
+
       throw new NodeOperationError(
         this.getNode(),
         `Failed to initialize MemMachine memory: ${(error as Error).message}`,

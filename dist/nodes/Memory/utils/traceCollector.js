@@ -13,9 +13,10 @@ class TraceCollector {
         const startTime = new Date(entry.timestamp).getTime();
         const endTime = Date.now();
         const duration = endTime - startTime;
+        const safeDuration = Math.max(duration, 1);
         Object.assign(entry, {
             status: update.success ? 'success' : 'failure',
-            duration,
+            duration: safeDuration,
             metadata: { ...entry.metadata, ...update.metadata },
             error: update.error,
         });

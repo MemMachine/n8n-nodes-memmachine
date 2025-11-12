@@ -21,6 +21,14 @@ class MemMachineMemory {
         return ['chat_history'];
     }
     async loadMemoryVariables(_values) {
+        let loadTraceId = '';
+        if (this.config.cloudTracer && this.config.parentTraceId) {
+            loadTraceId = this.config.cloudTracer.startOperation('retrieve', {
+                operation: 'loadMemoryVariables',
+                sessionId: this.config.sessionId,
+                contextWindowLength: this.config.contextWindowLength,
+            }, this.config.parentTraceId);
+        }
         try {
             console.log('[MemMachineMemory] loadMemoryVariables - CALLED - Retrieving conversation history', {
                 sessionId: this.config.sessionId,
@@ -82,11 +90,36 @@ class MemMachineMemory {
                     'body': JSON.stringify(searchBody),
                 });
             }
+            let apiCallTraceId = '';
+            const requestBodyFormatted = JSON.stringify(searchBody, null, 2);
+            const requestBody = JSON.stringify(searchBody);
+            if (this.config.cloudTracer && loadTraceId) {
+                apiCallTraceId = this.config.cloudTracer.startOperation('search', {
+                    operation: 'api_call_search',
+                    endpoint: '/v1/memories/search',
+                    sessionId: this.config.sessionId,
+                    'request.body': requestBodyFormatted,
+                    'request.body.size': requestBody.length,
+                }, loadTraceId);
+            }
             const response = await fetch(`${this.config.apiUrl}/v1/memories/search`, {
                 method: 'POST',
                 headers,
-                body: JSON.stringify(searchBody),
+                body: requestBody,
             });
+            const data = await response.json();
+            const apiResponseBody = JSON.stringify(data, null, 2);
+            if (apiCallTraceId && this.config.cloudTracer) {
+                this.config.cloudTracer.completeOperation(apiCallTraceId, {
+                    success: response.ok,
+                    metadata: {
+                        'http.status_code': response.status,
+                        'http.status_text': response.statusText,
+                        'response.body': apiResponseBody.length > 1000 ? apiResponseBody.substring(0, 1000) + '...[truncated]' : apiResponseBody,
+                        'response.body.size': apiResponseBody.length,
+                    },
+                });
+            }
             searchSpan && this.config.tracer?.addAttributes(searchSpan, {
                 'http.status_code': response.status,
                 'http.status_text': response.statusText,
@@ -96,8 +129,7 @@ class MemMachineMemory {
                 searchSpan && this.config.tracer?.endSpanWithError(searchSpan, error);
                 throw error;
             }
-            const data = await response.json();
-            const responseBody = JSON.stringify(data);
+            const responseBody = apiResponseBody;
             if (searchSpan && this.config.tracer) {
                 const responseHeaderLogKV = {};
                 response.headers.forEach((value, key) => {
@@ -118,8 +150,27 @@ class MemMachineMemory {
                 'memmachine.response.episodic_count': Array.isArray(rawEpisodicMemory) ? rawEpisodicMemory.length : 0,
                 'memmachine.response.profile_count': Array.isArray(rawProfileMemory) ? rawProfileMemory.length : 0,
             });
+            let processingTraceId = '';
+            if (this.config.cloudTracer && loadTraceId) {
+                processingTraceId = this.config.cloudTracer.startOperation('enrich', {
+                    operation: 'process_memories',
+                    episodicCount: Array.isArray(rawEpisodicMemory) ? rawEpisodicMemory.length : 0,
+                    profileCount: Array.isArray(rawProfileMemory) ? rawProfileMemory.length : 0,
+                    templateEnabled: this.config.enableTemplate,
+                }, loadTraceId);
+            }
             if (this.config.enableTemplate && this.config.contextTemplate) {
-                return this.formatTemplatedMemory(rawEpisodicMemory, rawProfileMemory);
+                const result = this.formatTemplatedMemory(rawEpisodicMemory, rawProfileMemory);
+                if (processingTraceId && this.config.cloudTracer) {
+                    this.config.cloudTracer.completeOperation(processingTraceId, {
+                        success: true,
+                        metadata: {
+                            operation: 'format_template',
+                            outputLength: result.chat_history?.[0]?.content?.length || 0,
+                        },
+                    });
+                }
+                return result;
             }
             const messages = [];
             if (Array.isArray(rawEpisodicMemory)) {
@@ -152,16 +203,57 @@ class MemMachineMemory {
                 totalMessages: messages.length,
                 recentMessages: recentMessages.length,
             });
+            if (processingTraceId && this.config.cloudTracer) {
+                this.config.cloudTracer.completeOperation(processingTraceId, {
+                    success: true,
+                    metadata: {
+                        operation: 'process_raw_messages',
+                        messagesTotal: messages.length,
+                        messagesReturned: recentMessages.length,
+                    },
+                });
+            }
             searchSpan && this.config.tracer?.addAttributes(searchSpan, {
                 'memmachine.messages.total': messages.length,
                 'memmachine.messages.returned': recentMessages.length,
             });
             searchSpan && this.config.tracer?.endSpan(searchSpan);
+            if (loadTraceId && this.config.cloudTracer) {
+                this.config.cloudTracer.completeOperation(loadTraceId, {
+                    success: true,
+                    metadata: {
+                        operation: 'loadMemoryVariables',
+                        messagesTotal: messages.length,
+                        messagesReturned: recentMessages.length,
+                        sessionId: this.config.sessionId,
+                    },
+                });
+                if (this.config.exportToJaeger && this.config.jaegerEndpoint) {
+                    this.config.cloudTracer.exportTracesToJaeger(this.config.jaegerEndpoint).catch((error) => {
+                        console.error('[MemMachineMemory] Failed to export traces after loadMemoryVariables:', error);
+                    });
+                }
+            }
             return {
                 chat_history: recentMessages,
             };
         }
         catch (error) {
+            if (loadTraceId && this.config.cloudTracer) {
+                this.config.cloudTracer.completeOperation(loadTraceId, {
+                    success: false,
+                    error: error.message,
+                    metadata: {
+                        operation: 'loadMemoryVariables',
+                        sessionId: this.config.sessionId,
+                    },
+                });
+                if (this.config.exportToJaeger && this.config.jaegerEndpoint) {
+                    this.config.cloudTracer.exportTracesToJaeger(this.config.jaegerEndpoint).catch((exportError) => {
+                        console.error('[MemMachineMemory] Failed to export traces after loadMemoryVariables error:', exportError);
+                    });
+                }
+            }
             this.config.logger?.error('loadMemoryVariables - Failed to retrieve history', {
                 error: error.message,
                 sessionId: this.config.sessionId,
@@ -172,6 +264,13 @@ class MemMachineMemory {
         }
     }
     async saveContext(inputValues, outputValues) {
+        let saveTraceId = '';
+        if (this.config.cloudTracer && this.config.parentTraceId) {
+            saveTraceId = this.config.cloudTracer.startOperation('store', {
+                operation: 'saveContext',
+                sessionId: this.config.sessionId,
+            }, this.config.parentTraceId);
+        }
         try {
             const userMessage = inputValues.input;
             const agentResponse = outputValues.output;
@@ -186,21 +285,52 @@ class MemMachineMemory {
                 agentResponseLength: agentResponse?.length || 0,
             });
             if (userMessage) {
-                await this.storeMessage(userMessage, this.config.userId[0], this.config.agentId[0]);
+                await this.storeMessage(userMessage, this.config.userId[0], this.config.agentId[0], saveTraceId, 'user_message');
             }
             if (agentResponse) {
-                await this.storeMessage(agentResponse, this.config.agentId[0], this.config.userId[0]);
+                await this.storeMessage(agentResponse, this.config.agentId[0], this.config.userId[0], saveTraceId, 'agent_response');
             }
             this.config.logger?.info('saveContext - Successfully stored conversation turn');
+            if (saveTraceId && this.config.cloudTracer) {
+                this.config.cloudTracer.completeOperation(saveTraceId, {
+                    success: true,
+                    metadata: {
+                        operation: 'saveContext',
+                        userMessageLength: inputValues.input ? String(inputValues.input).length : 0,
+                        agentResponseLength: outputValues.output ? String(outputValues.output).length : 0,
+                        sessionId: this.config.sessionId,
+                    },
+                });
+                if (this.config.exportToJaeger && this.config.jaegerEndpoint) {
+                    this.config.cloudTracer.exportTracesToJaeger(this.config.jaegerEndpoint).catch((error) => {
+                        console.error('[MemMachineMemory] Failed to export traces after saveContext:', error);
+                    });
+                }
+            }
         }
         catch (error) {
+            if (saveTraceId && this.config.cloudTracer) {
+                this.config.cloudTracer.completeOperation(saveTraceId, {
+                    success: false,
+                    error: error.message,
+                    metadata: {
+                        operation: 'saveContext',
+                        sessionId: this.config.sessionId,
+                    },
+                });
+                if (this.config.exportToJaeger && this.config.jaegerEndpoint) {
+                    this.config.cloudTracer.exportTracesToJaeger(this.config.jaegerEndpoint).catch((exportError) => {
+                        console.error('[MemMachineMemory] Failed to export traces after saveContext error:', exportError);
+                    });
+                }
+            }
             this.config.logger?.error('saveContext - Failed to store conversation', {
                 error: error.message,
                 sessionId: this.config.sessionId,
             });
         }
     }
-    async storeMessage(content, producer, producedFor) {
+    async storeMessage(content, producer, producedFor, parentTraceId = '', messageType = 'message') {
         const storeBody = {
             session: {
                 group_id: this.config.groupId,
@@ -260,12 +390,44 @@ class MemMachineMemory {
                 'body': JSON.stringify(storeBody),
             });
         }
+        let apiStoreTraceId = '';
+        const storeRequestBodyFormatted = JSON.stringify(storeBody, null, 2);
+        const storeRequestBody = JSON.stringify(storeBody);
+        if (this.config.cloudTracer && parentTraceId) {
+            apiStoreTraceId = this.config.cloudTracer.startOperation('store', {
+                operation: `api_call_store_${messageType}`,
+                endpoint: '/v1/memories',
+                producer,
+                messageLength: content.length,
+                'request.body': storeRequestBodyFormatted.length > 500 ? storeRequestBodyFormatted.substring(0, 500) + '...[truncated]' : storeRequestBodyFormatted,
+                'request.body.size': storeRequestBody.length,
+            }, parentTraceId);
+        }
         const response = await fetch(`${this.config.apiUrl}/v1/memories`, {
             method: 'POST',
             headers,
-            body: JSON.stringify(storeBody),
+            body: storeRequestBody,
         });
         const responseText = await response.clone().text();
+        let formattedResponse = responseText;
+        try {
+            const parsed = JSON.parse(responseText);
+            formattedResponse = JSON.stringify(parsed, null, 2);
+        }
+        catch (e) {
+        }
+        if (apiStoreTraceId && this.config.cloudTracer) {
+            this.config.cloudTracer.completeOperation(apiStoreTraceId, {
+                success: response.ok,
+                metadata: {
+                    'http.status_code': response.status,
+                    'http.status_text': response.statusText,
+                    messageType,
+                    'response.body': formattedResponse.length > 500 ? formattedResponse.substring(0, 500) + '...[truncated]' : formattedResponse,
+                    'response.body.size': responseText.length,
+                },
+            });
+        }
         storeSpan && this.config.tracer?.addAttributes(storeSpan, {
             'http.status_code': response.status,
             'http.status_text': response.statusText,

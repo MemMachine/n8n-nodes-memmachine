@@ -63,8 +63,20 @@ export interface MemMachineMemoryConfig {
     warn: (message: string, ...args: any[]) => void;
   };
   
-  /** Optional tracer for distributed tracing */
+  /** Optional tracer for distributed tracing (legacy) */
   tracer?: MemoryTracer;
+  
+  /** Optional cloud tracer for parent-child span relationships */
+  cloudTracer?: MemoryTracer;
+  
+  /** Parent trace ID for linking child operations */
+  parentTraceId?: string;
+  
+  /** Export traces to Jaeger endpoint (optional) */
+  exportToJaeger?: boolean;
+  
+  /** Jaeger OTLP endpoint URL (optional) */
+  jaegerEndpoint?: string;
 }
 
 /**
@@ -106,6 +118,16 @@ export class MemMachineMemory {
    * Called by AI Agent before generating responses
    */
   async loadMemoryVariables(_values: InputValues): Promise<MemoryVariables> {
+    // Start child span for load operation if cloud tracer is available
+    let loadTraceId = '';
+    if (this.config.cloudTracer && this.config.parentTraceId) {
+      loadTraceId = this.config.cloudTracer.startOperation('retrieve', {
+        operation: 'loadMemoryVariables',
+        sessionId: this.config.sessionId,
+        contextWindowLength: this.config.contextWindowLength,
+      }, this.config.parentTraceId);
+    }
+
     try {
       console.log('[MemMachineMemory] loadMemoryVariables - CALLED - Retrieving conversation history', {
         sessionId: this.config.sessionId,
@@ -181,12 +203,42 @@ export class MemMachineMemory {
         });
       }
 
+      // Start nested cloud tracer span for the API call
+      let apiCallTraceId = '';
+      const requestBodyFormatted = JSON.stringify(searchBody, null, 2); // Pretty print
+      const requestBody = JSON.stringify(searchBody); // Compact for actual request
+      if (this.config.cloudTracer && loadTraceId) {
+        apiCallTraceId = this.config.cloudTracer.startOperation('search', {
+          operation: 'api_call_search',
+          endpoint: '/v1/memories/search',
+          sessionId: this.config.sessionId,
+          'request.body': requestBodyFormatted,
+          'request.body.size': requestBody.length,
+        }, loadTraceId);
+      }
+
       // Make request to MemMachine Search API
       const response = await fetch(`${this.config.apiUrl}/v1/memories/search`, {
         method: 'POST',
         headers,
-        body: JSON.stringify(searchBody),
+        body: requestBody,
       });
+
+      const data = await response.json() as { content?: { episodic_memory?: any[]; profile_memory?: any[] } };
+      const apiResponseBody = JSON.stringify(data, null, 2); // Pretty print with 2-space indentation
+
+      // Complete API call span
+      if (apiCallTraceId && this.config.cloudTracer) {
+        this.config.cloudTracer.completeOperation(apiCallTraceId, {
+          success: response.ok,
+          metadata: {
+            'http.status_code': response.status,
+            'http.status_text': response.statusText,
+            'response.body': apiResponseBody.length > 1000 ? apiResponseBody.substring(0, 1000) + '...[truncated]' : apiResponseBody,
+            'response.body.size': apiResponseBody.length,
+          },
+        });
+      }
 
       // Add response status to span
       searchSpan && this.config.tracer?.addAttributes(searchSpan, {
@@ -200,8 +252,7 @@ export class MemMachineMemory {
         throw error;
       }
 
-      const data = await response.json() as { content?: { episodic_memory?: any[]; profile_memory?: any[] } };
-      const responseBody = JSON.stringify(data);
+      const responseBody = apiResponseBody;
       
       // Add response received event with structured KV logs
       if (searchSpan && this.config.tracer) {
@@ -230,10 +281,34 @@ export class MemMachineMemory {
         'memmachine.response.episodic_count': Array.isArray(rawEpisodicMemory) ? rawEpisodicMemory.length : 0,
         'memmachine.response.profile_count': Array.isArray(rawProfileMemory) ? rawProfileMemory.length : 0,
       });
+
+      // Start nested cloud tracer span for memory processing
+      let processingTraceId = '';
+      if (this.config.cloudTracer && loadTraceId) {
+        processingTraceId = this.config.cloudTracer.startOperation('enrich', {
+          operation: 'process_memories',
+          episodicCount: Array.isArray(rawEpisodicMemory) ? rawEpisodicMemory.length : 0,
+          profileCount: Array.isArray(rawProfileMemory) ? rawProfileMemory.length : 0,
+          templateEnabled: this.config.enableTemplate,
+        }, loadTraceId);
+      }
       
       // If template is enabled, return formatted context as system message
       if (this.config.enableTemplate && this.config.contextTemplate) {
-        return this.formatTemplatedMemory(rawEpisodicMemory, rawProfileMemory);
+        const result = this.formatTemplatedMemory(rawEpisodicMemory, rawProfileMemory);
+        
+        // Complete processing span
+        if (processingTraceId && this.config.cloudTracer) {
+          this.config.cloudTracer.completeOperation(processingTraceId, {
+            success: true,
+            metadata: {
+              operation: 'format_template',
+              outputLength: result.chat_history?.[0]?.content?.length || 0,
+            },
+          });
+        }
+        
+        return result;
       }
       
       // Otherwise, return raw messages for standard LangChain flow
@@ -275,6 +350,18 @@ export class MemMachineMemory {
         recentMessages: recentMessages.length,
       });
 
+      // Complete processing span for non-template path
+      if (processingTraceId && this.config.cloudTracer) {
+        this.config.cloudTracer.completeOperation(processingTraceId, {
+          success: true,
+          metadata: {
+            operation: 'process_raw_messages',
+            messagesTotal: messages.length,
+            messagesReturned: recentMessages.length,
+          },
+        });
+      }
+
       // End search span successfully
       searchSpan && this.config.tracer?.addAttributes(searchSpan, {
         'memmachine.messages.total': messages.length,
@@ -282,10 +369,49 @@ export class MemMachineMemory {
       });
       searchSpan && this.config.tracer?.endSpan(searchSpan);
 
+      // Complete cloud tracer child span on success
+      if (loadTraceId && this.config.cloudTracer) {
+        this.config.cloudTracer.completeOperation(loadTraceId, {
+          success: true,
+          metadata: {
+            operation: 'loadMemoryVariables',
+            messagesTotal: messages.length,
+            messagesReturned: recentMessages.length,
+            sessionId: this.config.sessionId,
+          },
+        });
+
+        // Export traces to Jaeger after child operation completes
+        if (this.config.exportToJaeger && this.config.jaegerEndpoint) {
+          this.config.cloudTracer.exportTracesToJaeger(this.config.jaegerEndpoint).catch((error: Error) => {
+            console.error('[MemMachineMemory] Failed to export traces after loadMemoryVariables:', error);
+          });
+        }
+      }
+
       return {
         chat_history: recentMessages,
       };
     } catch (error) {
+      // Complete cloud tracer child span on error
+      if (loadTraceId && this.config.cloudTracer) {
+        this.config.cloudTracer.completeOperation(loadTraceId, {
+          success: false,
+          error: (error as Error).message,
+          metadata: {
+            operation: 'loadMemoryVariables',
+            sessionId: this.config.sessionId,
+          },
+        });
+
+        // Export traces to Jaeger even on error
+        if (this.config.exportToJaeger && this.config.jaegerEndpoint) {
+          this.config.cloudTracer.exportTracesToJaeger(this.config.jaegerEndpoint).catch((exportError: Error) => {
+            console.error('[MemMachineMemory] Failed to export traces after loadMemoryVariables error:', exportError);
+          });
+        }
+      }
+
       // Graceful degradation - log error and return empty history
       this.config.logger?.error('loadMemoryVariables - Failed to retrieve history', {
         error: (error as Error).message,
@@ -304,6 +430,15 @@ export class MemMachineMemory {
    * Called by AI Agent after generating response
    */
   async saveContext(inputValues: InputValues, outputValues: InputValues): Promise<void> {
+    // Start child span for save operation if cloud tracer is available
+    let saveTraceId = '';
+    if (this.config.cloudTracer && this.config.parentTraceId) {
+      saveTraceId = this.config.cloudTracer.startOperation('store', {
+        operation: 'saveContext',
+        sessionId: this.config.sessionId,
+      }, this.config.parentTraceId);
+    }
+
     try {
       const userMessage = inputValues.input as string;
       const agentResponse = outputValues.output as string;
@@ -325,6 +460,8 @@ export class MemMachineMemory {
           userMessage,
           this.config.userId[0], // User is the producer
           this.config.agentId[0], // Agent is the recipient
+          saveTraceId, // Pass parent trace ID for nested span
+          'user_message',
         );
       }
 
@@ -334,11 +471,52 @@ export class MemMachineMemory {
           agentResponse,
           this.config.agentId[0], // Agent is the producer
           this.config.userId[0], // User is the recipient
+          saveTraceId, // Pass parent trace ID for nested span
+          'agent_response',
         );
       }
 
       this.config.logger?.info('saveContext - Successfully stored conversation turn');
+
+      // Complete cloud tracer child span on success
+      if (saveTraceId && this.config.cloudTracer) {
+        this.config.cloudTracer.completeOperation(saveTraceId, {
+          success: true,
+          metadata: {
+            operation: 'saveContext',
+            userMessageLength: inputValues.input ? String(inputValues.input).length : 0,
+            agentResponseLength: outputValues.output ? String(outputValues.output).length : 0,
+            sessionId: this.config.sessionId,
+          },
+        });
+
+        // Export traces to Jaeger after child operation completes
+        if (this.config.exportToJaeger && this.config.jaegerEndpoint) {
+          this.config.cloudTracer.exportTracesToJaeger(this.config.jaegerEndpoint).catch((error: Error) => {
+            console.error('[MemMachineMemory] Failed to export traces after saveContext:', error);
+          });
+        }
+      }
     } catch (error) {
+      // Complete cloud tracer child span on error
+      if (saveTraceId && this.config.cloudTracer) {
+        this.config.cloudTracer.completeOperation(saveTraceId, {
+          success: false,
+          error: (error as Error).message,
+          metadata: {
+            operation: 'saveContext',
+            sessionId: this.config.sessionId,
+          },
+        });
+
+        // Export traces to Jaeger even on error
+        if (this.config.exportToJaeger && this.config.jaegerEndpoint) {
+          this.config.cloudTracer.exportTracesToJaeger(this.config.jaegerEndpoint).catch((exportError: Error) => {
+            console.error('[MemMachineMemory] Failed to export traces after saveContext error:', exportError);
+          });
+        }
+      }
+
       // Graceful degradation - log error but don't throw
       // This allows the conversation to continue even if storage fails
       this.config.logger?.error('saveContext - Failed to store conversation', {
@@ -355,6 +533,8 @@ export class MemMachineMemory {
     content: string,
     producer: string,
     producedFor: string,
+    parentTraceId: string = '',
+    messageType: string = 'message',
   ): Promise<void> {
     const storeBody = {
       session: {
@@ -427,13 +607,51 @@ export class MemMachineMemory {
       });
     }
 
+    // Start nested cloud tracer span for the API call
+    let apiStoreTraceId = '';
+    const storeRequestBodyFormatted = JSON.stringify(storeBody, null, 2); // Pretty print
+    const storeRequestBody = JSON.stringify(storeBody); // Compact for actual request
+    if (this.config.cloudTracer && parentTraceId) {
+      apiStoreTraceId = this.config.cloudTracer.startOperation('store', {
+        operation: `api_call_store_${messageType}`,
+        endpoint: '/v1/memories',
+        producer,
+        messageLength: content.length,
+        'request.body': storeRequestBodyFormatted.length > 500 ? storeRequestBodyFormatted.substring(0, 500) + '...[truncated]' : storeRequestBodyFormatted,
+        'request.body.size': storeRequestBody.length,
+      }, parentTraceId);
+    }
+
     const response = await fetch(`${this.config.apiUrl}/v1/memories`, {
       method: 'POST',
       headers,
-      body: JSON.stringify(storeBody),
+      body: storeRequestBody,
     });
 
     const responseText = await response.clone().text();
+    
+    // Try to parse and pretty-print response if it's JSON
+    let formattedResponse = responseText;
+    try {
+      const parsed = JSON.parse(responseText);
+      formattedResponse = JSON.stringify(parsed, null, 2);
+    } catch (e) {
+      // Not JSON or empty, use as-is
+    }
+
+    // Complete API store span
+    if (apiStoreTraceId && this.config.cloudTracer) {
+      this.config.cloudTracer.completeOperation(apiStoreTraceId, {
+        success: response.ok,
+        metadata: {
+          'http.status_code': response.status,
+          'http.status_text': response.statusText,
+          messageType,
+          'response.body': formattedResponse.length > 500 ? formattedResponse.substring(0, 500) + '...[truncated]' : formattedResponse,
+          'response.body.size': responseText.length,
+        },
+      });
+    }
 
     // Add response status to span
     storeSpan && this.config.tracer?.addAttributes(storeSpan, {

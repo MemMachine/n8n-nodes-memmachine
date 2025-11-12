@@ -8,7 +8,7 @@ export declare class MemoryTracer {
     private generateTraceId;
     private generateTimestamp;
     private inferEndpoint;
-    startOperation(type: OperationType, metadata?: any): string;
+    startOperation(type: OperationType, metadata?: any, parentTraceId?: string): string;
     completeOperation(traceId: string, result: any): void;
     getTraceOutput(): INodeExecutionData[];
     exportTracesToJaeger(endpoint: string): Promise<void>;

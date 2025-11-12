@@ -922,12 +922,21 @@ class MemMachine {
         return [returnData];
     }
     async supplyData(itemIndex) {
+        const tracingEnabled = this.getNodeParameter('tracingEnabled', itemIndex, false);
+        const cloudTracer = new tracer_1.MemoryTracer({
+            enabled: tracingEnabled,
+            format: this.getNodeParameter('traceFormat', itemIndex, 'json'),
+            verbosity: this.getNodeParameter('traceVerbosity', itemIndex, 'minimal'),
+            maxEntrySize: 10240,
+        });
+        let sessionId = '';
+        let traceId = '';
         try {
             const mode = this.getNodeParameter('mode', itemIndex);
             if (mode !== 'memory') {
                 throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Node must be in "AI Agent Memory" mode to connect to AI Agents. Please change the Mode parameter.', { itemIndex });
             }
-            const sessionId = this.getNodeParameter('sessionId', itemIndex);
+            sessionId = this.getNodeParameter('sessionId', itemIndex);
             const groupId = this.getNodeParameter('groupId', itemIndex, 'default');
             const agentId = this.getNodeParameter('agentId', itemIndex);
             const userId = this.getNodeParameter('userId', itemIndex);
@@ -945,7 +954,22 @@ class MemMachine {
             if (!sessionId || sessionId.trim() === '') {
                 throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Session ID is required for AI Agent memory. Please provide a session identifier.', { itemIndex });
             }
-            const tracer = undefined;
+            if (tracingEnabled) {
+                traceId = cloudTracer.startOperation('store', {
+                    mode: 'ai_agent_memory',
+                    sessionId: sessionId.trim(),
+                    groupId,
+                    agentId: agentIdArray.join(','),
+                    userId: userIdArray.join(','),
+                    contextWindowLength,
+                    enableTemplate,
+                    historyCount,
+                    shortTermCount,
+                });
+            }
+            const legacyTracer = undefined;
+            const exportToJaeger = this.getNodeParameter('exportToJaeger', itemIndex, false);
+            const jaegerEndpoint = this.getNodeParameter('jaegerOtlpEndpoint', itemIndex, 'http://jaeger:4318/v1/traces');
             const memory = new MemMachineMemory_1.MemMachineMemory({
                 apiUrl,
                 apiKey,
@@ -958,7 +982,11 @@ class MemMachine {
                 contextTemplate: enableTemplate ? contextTemplate : undefined,
                 historyCount,
                 shortTermCount,
-                tracer,
+                tracer: legacyTracer,
+                cloudTracer: tracingEnabled ? cloudTracer : undefined,
+                parentTraceId: tracingEnabled ? traceId : undefined,
+                exportToJaeger: tracingEnabled && exportToJaeger,
+                jaegerEndpoint: jaegerEndpoint,
                 logger: {
                     info: (message, ...args) => {
                         console.log(`[MemMachineMemory] ${message}`, ...args);
@@ -971,15 +999,32 @@ class MemMachine {
                     },
                 },
             });
+            console.log('[MemMachine] supplyData - Parent span started', {
+                traceId,
+                sessionId: sessionId.trim(),
+                tracingEnabled,
+            });
             console.log('[MemMachine] supplyData - Returning memory instance', {
                 sessionId: sessionId.trim(),
                 memoryType: memory.constructor.name,
             });
-            return {
+            const response = {
                 response: memory,
             };
+            return response;
         }
         catch (error) {
+            if (tracingEnabled && traceId) {
+                cloudTracer.completeOperation(traceId, {
+                    success: false,
+                    error: error.message,
+                    metadata: {
+                        mode: 'ai_agent_memory',
+                        errorType: error instanceof n8n_workflow_1.NodeOperationError ? 'NodeOperationError' : 'Error',
+                        sessionId: sessionId ? sessionId.trim() : 'unknown',
+                    },
+                });
+            }
             throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Failed to initialize MemMachine memory: ${error.message}`, { itemIndex });
         }
     }

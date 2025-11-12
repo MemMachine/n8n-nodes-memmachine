@@ -19,6 +19,10 @@ export interface MemMachineMemoryConfig {
         warn: (message: string, ...args: any[]) => void;
     };
     tracer?: MemoryTracer;
+    cloudTracer?: MemoryTracer;
+    parentTraceId?: string;
+    exportToJaeger?: boolean;
+    jaegerEndpoint?: string;
 }
 export declare class MemMachineMemory {
     private config;

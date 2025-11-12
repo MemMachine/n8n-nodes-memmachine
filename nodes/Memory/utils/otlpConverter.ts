@@ -15,9 +15,15 @@ import type { TraceEntry } from './traceTypes';
 function traceEntryToOTLPSpan(trace: TraceEntry): any {
 	// Convert timestamp to nanoseconds (OTLP uses nanoseconds)
 	const startTimeNanos = new Date(trace.timestamp).getTime() * 1_000_000;
-	const endTimeNanos = trace.duration 
-		? startTimeNanos + (trace.duration * 1_000_000) 
-		: startTimeNanos;
+	
+	// Calculate end time with minimum 1 nanosecond duration to avoid negative duration errors
+	let endTimeNanos: number;
+	if (trace.duration && trace.duration > 0) {
+		endTimeNanos = startTimeNanos + (trace.duration * 1_000_000);
+	} else {
+		// Ensure end time is always at least 1 nanosecond after start time
+		endTimeNanos = startTimeNanos + 1;
+	}
 
 	// Map status
 	let statusCode = 0; // UNSET
@@ -61,13 +67,34 @@ function traceEntryToOTLPSpan(trace: TraceEntry): any {
 	}
 
 	// Convert UUID to proper OTLP format
-	// traceId needs to be 16 bytes (32 hex chars without dashes)
-	// spanId needs to be 8 bytes (first 16 hex chars)
-	const hexUuid = trace.traceId.replace(/-/g, '');
-	const traceIdHex = hexUuid; // Full 32 hex chars
-	const spanIdHex = hexUuid.substring(0, 16); // First 16 hex chars = 8 bytes
+	// For parent-child relationships in OTLP:
+	// - All spans in the same trace share the SAME traceId (identifies the trace tree)
+	// - Each span has its own unique spanId
+	// - Child spans reference their parent's spanId via parentSpanId
+	
+	let traceIdHex: string;
+	let spanIdHex: string;
+	let parentSpanIdHex: string | undefined;
 
-	return {
+	if (trace.parentTraceId) {
+		// This is a child span - use parent's traceId for the trace tree
+		const parentHexUuid = trace.parentTraceId.replace(/-/g, '');
+		traceIdHex = parentHexUuid; // Share parent's trace ID
+		
+		// Use parent's UUID first 16 chars as parentSpanId
+		parentSpanIdHex = parentHexUuid.substring(0, 16);
+		
+		// Generate unique spanId for this child using its own UUID
+		const childHexUuid = trace.traceId.replace(/-/g, '');
+		spanIdHex = childHexUuid.substring(0, 16);
+	} else {
+		// This is a root span - use its own UUID
+		const hexUuid = trace.traceId.replace(/-/g, '');
+		traceIdHex = hexUuid; // Full 32 hex chars
+		spanIdHex = hexUuid.substring(0, 16); // First 16 hex chars = 8 bytes
+	}
+
+	const span: any = {
 		traceId: traceIdHex,
 		spanId: spanIdHex,
 		name: `memory.${trace.operationType}`,
@@ -80,6 +107,13 @@ function traceEntryToOTLPSpan(trace: TraceEntry): any {
 			message: trace.error?.message || '',
 		},
 	};
+
+	// Add parent span ID if this is a child span
+	if (parentSpanIdHex) {
+		span.parentSpanId = parentSpanIdHex;
+	}
+
+	return span;
 }
 
 /**

@@ -4,9 +4,13 @@ exports.convertToOTLP = convertToOTLP;
 exports.exportToJaeger = exportToJaeger;
 function traceEntryToOTLPSpan(trace) {
     const startTimeNanos = new Date(trace.timestamp).getTime() * 1_000_000;
-    const endTimeNanos = trace.duration
-        ? startTimeNanos + (trace.duration * 1_000_000)
-        : startTimeNanos;
+    let endTimeNanos;
+    if (trace.duration && trace.duration > 0) {
+        endTimeNanos = startTimeNanos + (trace.duration * 1_000_000);
+    }
+    else {
+        endTimeNanos = startTimeNanos + 1;
+    }
     let statusCode = 0;
     if (trace.status === 'success') {
         statusCode = 1;
@@ -34,10 +38,22 @@ function traceEntryToOTLPSpan(trace) {
             attributes.push({ key: 'error.code', value: { stringValue: trace.error.code } });
         }
     }
-    const hexUuid = trace.traceId.replace(/-/g, '');
-    const traceIdHex = hexUuid;
-    const spanIdHex = hexUuid.substring(0, 16);
-    return {
+    let traceIdHex;
+    let spanIdHex;
+    let parentSpanIdHex;
+    if (trace.parentTraceId) {
+        const parentHexUuid = trace.parentTraceId.replace(/-/g, '');
+        traceIdHex = parentHexUuid;
+        parentSpanIdHex = parentHexUuid.substring(0, 16);
+        const childHexUuid = trace.traceId.replace(/-/g, '');
+        spanIdHex = childHexUuid.substring(0, 16);
+    }
+    else {
+        const hexUuid = trace.traceId.replace(/-/g, '');
+        traceIdHex = hexUuid;
+        spanIdHex = hexUuid.substring(0, 16);
+    }
+    const span = {
         traceId: traceIdHex,
         spanId: spanIdHex,
         name: `memory.${trace.operationType}`,
@@ -50,6 +66,10 @@ function traceEntryToOTLPSpan(trace) {
             message: trace.error?.message || '',
         },
     };
+    if (parentSpanIdHex) {
+        span.parentSpanId = parentSpanIdHex;
+    }
+    return span;
 }
 function convertToOTLP(traces) {
     const spans = traces.map(traceEntryToOTLPSpan);

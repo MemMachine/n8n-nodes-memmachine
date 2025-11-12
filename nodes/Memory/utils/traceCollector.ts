@@ -46,10 +46,13 @@ export class TraceCollector {
 		const endTime = Date.now();
 		const duration = endTime - startTime;
 
+		// Ensure minimum duration of 1ms to avoid zero-duration spans in Jaeger
+		const safeDuration = Math.max(duration, 1);
+
 		// Update entry with completion data
 		Object.assign(entry, {
 			status: update.success ? 'success' : 'failure',
-			duration,
+			duration: safeDuration,
 			metadata: { ...entry.metadata, ...update.metadata },
 			error: update.error,
 		});

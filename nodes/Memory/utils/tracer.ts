@@ -72,15 +72,17 @@ export class MemoryTracer {
 	 * Start a new operation trace
 	 * @param type Operation type
 	 * @param metadata Initial metadata (optional)
+	 * @param parentTraceId Optional parent trace ID for nested operations
 	 * @returns Trace ID for later completion
 	 */
-	startOperation(type: OperationType, metadata: any = {}): string {
+	startOperation(type: OperationType, metadata: any = {}, parentTraceId?: string): string {
 		if (!this.config.enabled) return '';
 
 		try {
 			const traceId = this.generateTraceId();
 			const entry: TraceEntry = {
 				traceId,
+				parentTraceId,
 				timestamp: this.generateTimestamp(),
 				operationType: type,
 				status: 'started',
@@ -141,12 +143,36 @@ export class MemoryTracer {
 		if (!this.config.enabled) return;
 
 		try {
-			const traces = this.collector.getAllTraces();
-			if (traces.length > 0) {
+			const allTraces = this.collector.getAllTraces();
+			
+			// Build set of parent trace IDs that have children
+			const parentTraceIds = new Set<string>();
+			for (const trace of allTraces) {
+				if (trace.parentTraceId) {
+					parentTraceIds.add(trace.parentTraceId);
+				}
+			}
+			
+			// Export completed traces + parent spans that have children (even if still 'started')
+			const tracesToExport = allTraces.filter(trace => {
+				// Always include completed traces
+				if (trace.status !== 'started') return true;
+				
+				// Include 'started' traces if they are parent spans with children
+				return parentTraceIds.has(trace.traceId);
+			});
+			
+			if (tracesToExport.length > 0) {
 				// Fire and forget - don't await to avoid blocking workflow
-				exportToJaeger(traces, endpoint).catch(error => {
+				exportToJaeger(tracesToExport, endpoint).catch(error => {
 					console.error('MemoryTracer.exportTracesToJaeger failed:', error);
 				});
+			}
+			
+			// Log export stats
+			const skippedCount = allTraces.length - tracesToExport.length;
+			if (skippedCount > 0) {
+				console.warn(`[OTLP Export] Skipped ${skippedCount} orphaned incomplete trace(s)`);
 			}
 		} catch (error) {
 			console.error('MemoryTracer.exportTracesToJaeger failed:', error);
