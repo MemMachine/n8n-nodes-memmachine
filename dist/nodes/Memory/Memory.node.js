@@ -450,56 +450,92 @@ class MemMachine {
                 ],
             },
             {
-                displayName: 'Enable Tracing',
-                name: 'enableTracing',
+                displayName: 'Enable Cloud Tracing',
+                name: 'tracingEnabled',
                 type: 'boolean',
                 default: false,
-                description: 'Whether to send distributed tracing spans to Jaeger for observability and debugging',
-                hint: 'When enabled, operation traces will be visible in Jaeger UI for performance analysis and debugging',
+                description: 'Enable operation tracing for debugging and monitoring (n8n Cloud compatible)',
+                hint: 'Captures operation lifecycle, timing, and error context without external dependencies',
             },
             {
-                displayName: 'Jaeger Endpoint',
-                name: 'jaegerEndpoint',
-                type: 'string',
-                displayOptions: {
-                    show: {
-                        enableTracing: [true],
-                    },
-                },
-                default: 'http://localhost:4318/v1/traces',
-                required: true,
-                placeholder: 'http://jaeger:4318/v1/traces',
-                description: 'Jaeger collector endpoint URL for trace export (OTLP format)',
-                hint: 'For HTTP: http://host:4318/v1/traces (OTLP), For UDP: host:6831 (legacy), For gRPC: http://host:4317 (OTLP)',
-            },
-            {
-                displayName: 'Protocol',
-                name: 'tracingProtocol',
+                displayName: 'Trace Output Format',
+                name: 'traceFormat',
                 type: 'options',
                 displayOptions: {
                     show: {
-                        enableTracing: [true],
+                        tracingEnabled: [true],
                     },
                 },
                 options: [
                     {
-                        name: 'HTTP',
-                        value: 'http',
-                        description: 'HTTP Thrift protocol (recommended for cloud deployments, port 14268)',
+                        name: 'JSON (Structured)',
+                        value: 'json',
+                        description: 'Output traces as structured JSON for programmatic parsing',
                     },
                     {
-                        name: 'UDP',
-                        value: 'udp',
-                        description: 'UDP compact Thrift protocol (high-throughput, requires agent, port 6831)',
-                    },
-                    {
-                        name: 'gRPC',
-                        value: 'grpc',
-                        description: 'gRPC OTLP protocol (for service meshes and OTLP collectors, port 14250)',
+                        name: 'Human Readable',
+                        value: 'human',
+                        description: 'Output traces as formatted text for console viewing',
                     },
                 ],
-                default: 'http',
-                description: 'Transport protocol for sending traces to Jaeger',
+                default: 'json',
+                description: 'Format for trace output in node execution results',
+            },
+            {
+                displayName: 'Trace Verbosity',
+                name: 'traceVerbosity',
+                type: 'options',
+                displayOptions: {
+                    show: {
+                        tracingEnabled: [true],
+                    },
+                },
+                options: [
+                    {
+                        name: 'Minimal',
+                        value: 'minimal',
+                        description: 'Essential fields only (traceId, timestamp, status)',
+                    },
+                    {
+                        name: 'Normal',
+                        value: 'normal',
+                        description: 'Standard detail level with timing and memory counts',
+                    },
+                    {
+                        name: 'Verbose',
+                        value: 'verbose',
+                        description: 'Comprehensive detail including all metadata fields',
+                    },
+                ],
+                default: 'normal',
+                description: 'Level of detail in trace output',
+            },
+            {
+                displayName: 'Export to Jaeger',
+                name: 'exportToJaeger',
+                type: 'boolean',
+                displayOptions: {
+                    show: {
+                        tracingEnabled: [true],
+                    },
+                },
+                default: false,
+                description: 'Send traces to Jaeger via OTLP HTTP (requires Jaeger endpoint)',
+                hint: 'Traces will be sent to Jaeger for visualization while still appearing in workflow output',
+            },
+            {
+                displayName: 'Jaeger OTLP Endpoint',
+                name: 'jaegerOtlpEndpoint',
+                type: 'string',
+                displayOptions: {
+                    show: {
+                        tracingEnabled: [true],
+                        exportToJaeger: [true],
+                    },
+                },
+                default: 'http://jaeger:4318/v1/traces',
+                description: 'Jaeger OTLP HTTP endpoint URL',
+                placeholder: 'http://jaeger:4318/v1/traces',
             },
         ],
     };
@@ -507,18 +543,24 @@ class MemMachine {
         const items = this.getInputData();
         const returnData = [];
         const operation = this.getNodeParameter('operation', 0);
-        const tracingEnabled = this.getNodeParameter('enableTracing', 0, false);
-        const tracer = new tracer_1.MemoryTracer();
-        if (tracingEnabled) {
-            const tracingConfig = {
-                enabled: true,
-                endpoint: this.getNodeParameter('jaegerEndpoint', 0),
-                protocol: this.getNodeParameter('tracingProtocol', 0, 'http'),
-            };
-            tracer.initialize(tracingConfig);
-        }
+        const tracer = new tracer_1.MemoryTracer({
+            enabled: false,
+            format: 'json',
+            verbosity: 'minimal',
+            maxEntrySize: 10240,
+        });
+        const cloudTracingEnabled = this.getNodeParameter('tracingEnabled', 0, false);
+        const cloudTraceFormat = this.getNodeParameter('traceFormat', 0, 'json');
+        const cloudTraceVerbosity = this.getNodeParameter('traceVerbosity', 0, 'normal');
+        const cloudTracer = new tracer_1.MemoryTracer({
+            enabled: cloudTracingEnabled,
+            format: cloudTraceFormat,
+            verbosity: cloudTraceVerbosity,
+            maxEntrySize: 10240,
+        });
         for (let i = 0; i < items.length; i++) {
             let operationSpan = undefined;
+            let traceId = '';
             try {
                 const session = {
                     group_id: this.getNodeParameter('groupId', i),
@@ -527,6 +569,12 @@ class MemMachine {
                     session_id: this.getNodeParameter('sessionId', i),
                 };
                 if (operation === 'store') {
+                    traceId = cloudTracer.startOperation('store', {
+                        sessionId: session.session_id,
+                        groupId: session.group_id,
+                        userId: Array.isArray(session.user_id) ? session.user_id.join(',') : session.user_id,
+                        agentId: Array.isArray(session.agent_id) ? session.agent_id.join(',') : session.agent_id,
+                    });
                     operationSpan = tracer.startSpan('memory.store', {
                         attributes: {
                             'operation.type': 'store',
@@ -608,6 +656,23 @@ class MemMachine {
                         'message.length': episodeContent.length,
                     });
                     tracer.endSpan(operationSpan);
+                    cloudTracer.completeOperation(traceId, {
+                        success: true,
+                        metadata: {
+                            messageLength: episodeContent.length,
+                            episodeType,
+                            stored: true,
+                            'http.method': 'POST',
+                            'http.url': `${baseURL}/v1/memories`,
+                            'http.target': '/v1/memories',
+                            'request.headers': JSON.stringify({ 'session-id': session.session_id }),
+                            'request.body': JSON.stringify(requestOptions.body),
+                            'request.body.size': JSON.stringify(requestOptions.body).length,
+                            'http.status_code': 200,
+                            'response.body': responseBody.substring(0, 500),
+                            'response.body.size': responseBody.length,
+                        },
+                    });
                     returnData.push({
                         json: {
                             ...items[i].json,
@@ -617,6 +682,12 @@ class MemMachine {
                     });
                 }
                 else if (operation === 'enrich') {
+                    traceId = cloudTracer.startOperation('enrich', {
+                        sessionId: session.session_id,
+                        groupId: session.group_id,
+                        userId: Array.isArray(session.user_id) ? session.user_id.join(',') : session.user_id,
+                        agentId: Array.isArray(session.agent_id) ? session.agent_id.join(',') : session.agent_id,
+                    });
                     operationSpan = tracer.startSpan('memory.enrich', {
                         attributes: {
                             'operation.type': 'enrich',
@@ -773,6 +844,31 @@ class MemMachine {
                         'template.enabled': enableTemplate,
                     });
                     tracer.endSpan(operationSpan);
+                    cloudTracer.completeOperation(traceId, {
+                        success: true,
+                        metadata: {
+                            memoryCount: episodicMemories.length,
+                            historyCount: categorized.history.length,
+                            shortTermCount: categorized.shortTermMemory.length,
+                            longTermCount: categorized.longTermMemory.length,
+                            profileCount: profileMemory.length,
+                            templateEnabled: enableTemplate,
+                            contextLength: context.length,
+                            'http.method': 'POST',
+                            'http.url': `${baseURL}/v1/memories/search`,
+                            'http.target': '/v1/memories/search',
+                            'request.headers': JSON.stringify({ 'session-id': session.session_id }),
+                            'request.body': JSON.stringify(requestOptions.body),
+                            'request.body.size': JSON.stringify(requestOptions.body).length,
+                            'request.query': query,
+                            'request.limit': limit,
+                            'http.status_code': 200,
+                            'response.body': responseBody.substring(0, 500),
+                            'response.body.size': responseBody.length,
+                            'response.episodic_count': Array.isArray(rawEpisodicMemory) ? rawEpisodicMemory.length : 0,
+                            'response.profile_count': Array.isArray(rawProfileMemory) ? rawProfileMemory.length : 0,
+                        },
+                    });
                     returnData.push({
                         json: {
                             ...items[i].json,
@@ -791,6 +887,15 @@ class MemMachine {
             }
             catch (error) {
                 tracer.endSpanWithError(operationSpan, error);
+                if (traceId) {
+                    cloudTracer.completeOperation(traceId, {
+                        success: false,
+                        error: {
+                            message: error.message,
+                            type: 'unexpected',
+                        },
+                    });
+                }
                 if (this.continueOnFail()) {
                     returnData.push({
                         json: {
@@ -801,6 +906,17 @@ class MemMachine {
                     continue;
                 }
                 throw error;
+            }
+        }
+        if (cloudTracer.isEnabled()) {
+            const traceItems = cloudTracer.getTraceOutput();
+            returnData.push(...traceItems);
+            const exportToJaeger = this.getNodeParameter('exportToJaeger', 0, false);
+            if (exportToJaeger) {
+                const jaegerEndpoint = this.getNodeParameter('jaegerOtlpEndpoint', 0, 'http://jaeger:4318/v1/traces');
+                cloudTracer.exportTracesToJaeger(jaegerEndpoint).catch((error) => {
+                    console.error('Failed to export traces to Jaeger:', error);
+                });
             }
         }
         return [returnData];
@@ -829,18 +945,7 @@ class MemMachine {
             if (!sessionId || sessionId.trim() === '') {
                 throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Session ID is required for AI Agent memory. Please provide a session identifier.', { itemIndex });
             }
-            const tracingEnabled = this.getNodeParameter('enableTracing', itemIndex, false);
-            let tracer = undefined;
-            if (tracingEnabled) {
-                const tracingConfig = {
-                    enabled: true,
-                    endpoint: this.getNodeParameter('jaegerEndpoint', itemIndex),
-                    protocol: this.getNodeParameter('tracingProtocol', itemIndex, 'http'),
-                    serviceName: `memmachine-memory-${sessionId.trim()}`,
-                };
-                tracer = new tracer_1.MemoryTracer();
-                tracer.initialize(tracingConfig);
-            }
+            const tracer = undefined;
             const memory = new MemMachineMemory_1.MemMachineMemory({
                 apiUrl,
                 apiKey,

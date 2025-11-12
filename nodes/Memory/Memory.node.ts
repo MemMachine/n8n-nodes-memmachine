@@ -12,7 +12,7 @@ import { NodeOperationError } from 'n8n-workflow';
 import { categorizeMemories, type EpisodicMemoryItem } from './utils/categorizeMemories';
 import { renderTemplate, type ProfileMemoryFacts } from './utils/renderTemplate';
 import { MemMachineMemory } from './MemMachineMemory';
-import { MemoryTracer, type TracingConfig } from './utils/tracer';
+import { MemoryTracer } from './utils/tracer';
 
 export class MemMachine implements INodeType {
   description: INodeTypeDescription = {
@@ -463,58 +463,94 @@ export class MemMachine implements INodeType {
           },
         ],
       },
-      // Tracing Parameters
+      // n8n Cloud Compliant Tracing (Feature 006)
       {
-        displayName: 'Enable Tracing',
-        name: 'enableTracing',
+        displayName: 'Enable Cloud Tracing',
+        name: 'tracingEnabled',
         type: 'boolean',
         default: false,
-        description: 'Whether to send distributed tracing spans to Jaeger for observability and debugging',
-        hint: 'When enabled, operation traces will be visible in Jaeger UI for performance analysis and debugging',
+        description: 'Enable operation tracing for debugging and monitoring (n8n Cloud compatible)',
+        hint: 'Captures operation lifecycle, timing, and error context without external dependencies',
       },
       {
-        displayName: 'Jaeger Endpoint',
-        name: 'jaegerEndpoint',
-        type: 'string',
-        displayOptions: {
-          show: {
-            enableTracing: [true],
-          },
-        },
-        default: 'http://localhost:4318/v1/traces',
-        required: true,
-        placeholder: 'http://jaeger:4318/v1/traces',
-        description: 'Jaeger collector endpoint URL for trace export (OTLP format)',
-        hint: 'For HTTP: http://host:4318/v1/traces (OTLP), For UDP: host:6831 (legacy), For gRPC: http://host:4317 (OTLP)',
-      },
-      {
-        displayName: 'Protocol',
-        name: 'tracingProtocol',
+        displayName: 'Trace Output Format',
+        name: 'traceFormat',
         type: 'options',
         displayOptions: {
           show: {
-            enableTracing: [true],
+            tracingEnabled: [true],
           },
         },
         options: [
           {
-            name: 'HTTP',
-            value: 'http',
-            description: 'HTTP Thrift protocol (recommended for cloud deployments, port 14268)',
+            name: 'JSON (Structured)',
+            value: 'json',
+            description: 'Output traces as structured JSON for programmatic parsing',
           },
           {
-            name: 'UDP',
-            value: 'udp',
-            description: 'UDP compact Thrift protocol (high-throughput, requires agent, port 6831)',
-          },
-          {
-            name: 'gRPC',
-            value: 'grpc',
-            description: 'gRPC OTLP protocol (for service meshes and OTLP collectors, port 14250)',
+            name: 'Human Readable',
+            value: 'human',
+            description: 'Output traces as formatted text for console viewing',
           },
         ],
-        default: 'http',
-        description: 'Transport protocol for sending traces to Jaeger',
+        default: 'json',
+        description: 'Format for trace output in node execution results',
+      },
+      {
+        displayName: 'Trace Verbosity',
+        name: 'traceVerbosity',
+        type: 'options',
+        displayOptions: {
+          show: {
+            tracingEnabled: [true],
+          },
+        },
+        options: [
+          {
+            name: 'Minimal',
+            value: 'minimal',
+            description: 'Essential fields only (traceId, timestamp, status)',
+          },
+          {
+            name: 'Normal',
+            value: 'normal',
+            description: 'Standard detail level with timing and memory counts',
+          },
+          {
+            name: 'Verbose',
+            value: 'verbose',
+            description: 'Comprehensive detail including all metadata fields',
+          },
+        ],
+        default: 'normal',
+        description: 'Level of detail in trace output',
+      },
+      {
+        displayName: 'Export to Jaeger',
+        name: 'exportToJaeger',
+        type: 'boolean',
+        displayOptions: {
+          show: {
+            tracingEnabled: [true],
+          },
+        },
+        default: false,
+        description: 'Send traces to Jaeger via OTLP HTTP (requires Jaeger endpoint)',
+        hint: 'Traces will be sent to Jaeger for visualization while still appearing in workflow output',
+      },
+      {
+        displayName: 'Jaeger OTLP Endpoint',
+        name: 'jaegerOtlpEndpoint',
+        type: 'string',
+        displayOptions: {
+          show: {
+            tracingEnabled: [true],
+            exportToJaeger: [true],
+          },
+        },
+        default: 'http://jaeger:4318/v1/traces',
+        description: 'Jaeger OTLP HTTP endpoint URL',
+        placeholder: 'http://jaeger:4318/v1/traces',
       },
     ],
   };
@@ -524,21 +560,30 @@ export class MemMachine implements INodeType {
     const returnData: INodeExecutionData[] = [];
     const operation = this.getNodeParameter('operation', 0) as string;
 
-    // Initialize tracer if enabled
-    const tracingEnabled = this.getNodeParameter('enableTracing', 0, false) as boolean;
-    const tracer = new MemoryTracer();
-    
-    if (tracingEnabled) {
-      const tracingConfig: TracingConfig = {
-        enabled: true,
-        endpoint: this.getNodeParameter('jaegerEndpoint', 0) as string,
-        protocol: this.getNodeParameter('tracingProtocol', 0, 'http') as 'http' | 'udp' | 'grpc',
-      };
-      tracer.initialize(tracingConfig);
-    }
+    // Legacy tracer (no-op for backward compatibility with existing code)
+    const tracer = new MemoryTracer({
+      enabled: false,
+      format: 'json',
+      verbosity: 'minimal',
+      maxEntrySize: 10240,
+    });
+
+    // T017: Initialize n8n Cloud-compliant tracing (Feature 006)
+    const cloudTracingEnabled = this.getNodeParameter('tracingEnabled', 0, false) as boolean;
+    const cloudTraceFormat = this.getNodeParameter('traceFormat', 0, 'json') as 'json' | 'human';
+    const cloudTraceVerbosity = this.getNodeParameter('traceVerbosity', 0, 'normal') as 'minimal' | 'normal' | 'verbose';
+
+    // T018: Instantiate cloud-compliant tracer
+    const cloudTracer = new MemoryTracer({
+      enabled: cloudTracingEnabled,
+      format: cloudTraceFormat,
+      verbosity: cloudTraceVerbosity,
+      maxEntrySize: 10240, // 10KB per FR-010
+    });
 
     for (let i = 0; i < items.length; i++) {
       let operationSpan: any = undefined;
+      let traceId = ''; // Cloud trace ID for this operation
       
       try {
         // Build session context
@@ -550,6 +595,14 @@ export class MemMachine implements INodeType {
         };
 
         if (operation === 'store') {
+          // T027: Start cloud-compliant trace
+          traceId = cloudTracer.startOperation('store', {
+            sessionId: session.session_id,
+            groupId: session.group_id,
+            userId: Array.isArray(session.user_id) ? session.user_id.join(',') : session.user_id,
+            agentId: Array.isArray(session.agent_id) ? session.agent_id.join(',') : session.agent_id,
+          });
+
           // Store operation - start tracing span
           operationSpan = tracer.startSpan('memory.store', {
             attributes: {
@@ -660,6 +713,27 @@ export class MemMachine implements INodeType {
           
           // End span successfully
           tracer.endSpan(operationSpan);
+
+          // T028: Complete cloud trace on success with API details
+          cloudTracer.completeOperation(traceId, {
+            success: true,
+            metadata: {
+              messageLength: episodeContent.length,
+              episodeType,
+              stored: true,
+              // API Request details
+              'http.method': 'POST',
+              'http.url': `${baseURL}/v1/memories`,
+              'http.target': '/v1/memories',
+              'request.headers': JSON.stringify({ 'session-id': session.session_id }),
+              'request.body': JSON.stringify(requestOptions.body),
+              'request.body.size': JSON.stringify(requestOptions.body).length,
+              // API Response details
+              'http.status_code': 200,
+              'response.body': responseBody.substring(0, 500), // Truncate to avoid huge metadata
+              'response.body.size': responseBody.length,
+            },
+          });
           
           returnData.push({
             json: {
@@ -669,6 +743,14 @@ export class MemMachine implements INodeType {
             pairedItem: { item: i },
           });
         } else if (operation === 'enrich') {
+          // T027: Start cloud-compliant trace
+          traceId = cloudTracer.startOperation('enrich', {
+            sessionId: session.session_id,
+            groupId: session.group_id,
+            userId: Array.isArray(session.user_id) ? session.user_id.join(',') : session.user_id,
+            agentId: Array.isArray(session.agent_id) ? session.agent_id.join(',') : session.agent_id,
+          });
+
           // Enrich operation - start tracing span
           operationSpan = tracer.startSpan('memory.enrich', {
             attributes: {
@@ -877,6 +959,35 @@ export class MemMachine implements INodeType {
           
           // End span successfully
           tracer.endSpan(operationSpan);
+
+          // T028: Complete cloud trace on success with API details
+          cloudTracer.completeOperation(traceId, {
+            success: true,
+            metadata: {
+              memoryCount: episodicMemories.length,
+              historyCount: categorized.history.length,
+              shortTermCount: categorized.shortTermMemory.length,
+              longTermCount: categorized.longTermMemory.length,
+              profileCount: profileMemory.length,
+              templateEnabled: enableTemplate,
+              contextLength: context.length,
+              // API Request details
+              'http.method': 'POST',
+              'http.url': `${baseURL}/v1/memories/search`,
+              'http.target': '/v1/memories/search',
+              'request.headers': JSON.stringify({ 'session-id': session.session_id }),
+              'request.body': JSON.stringify(requestOptions.body),
+              'request.body.size': JSON.stringify(requestOptions.body).length,
+              'request.query': query,
+              'request.limit': limit,
+              // API Response details
+              'http.status_code': 200,
+              'response.body': responseBody.substring(0, 500), // Truncate to avoid huge metadata
+              'response.body.size': responseBody.length,
+              'response.episodic_count': Array.isArray(rawEpisodicMemory) ? rawEpisodicMemory.length : 0,
+              'response.profile_count': Array.isArray(rawProfileMemory) ? rawProfileMemory.length : 0,
+            },
+          });
           
           returnData.push({
             json: {
@@ -896,6 +1007,17 @@ export class MemMachine implements INodeType {
       } catch (error) {
         // End span with error if tracing is enabled
         tracer.endSpanWithError(operationSpan, error as Error);
+
+        // T029: Complete cloud trace on error
+        if (traceId) {
+          cloudTracer.completeOperation(traceId, {
+            success: false,
+            error: {
+              message: (error as Error).message,
+              type: 'unexpected',
+            },
+          });
+        }
         
         if (this.continueOnFail()) {
           returnData.push({
@@ -907,6 +1029,22 @@ export class MemMachine implements INodeType {
           continue;
         }
         throw error;
+      }
+    }
+
+    // T019: Append cloud-compliant trace output if enabled
+    if (cloudTracer.isEnabled()) {
+      const traceItems = cloudTracer.getTraceOutput();
+      returnData.push(...traceItems);
+
+      // Export to Jaeger if enabled
+      const exportToJaeger = this.getNodeParameter('exportToJaeger', 0, false) as boolean;
+      if (exportToJaeger) {
+        const jaegerEndpoint = this.getNodeParameter('jaegerOtlpEndpoint', 0, 'http://jaeger:4318/v1/traces') as string;
+        // Fire and forget - don't wait for export to complete
+        cloudTracer.exportTracesToJaeger(jaegerEndpoint).catch((error: Error) => {
+          console.error('Failed to export traces to Jaeger:', error);
+        });
       }
     }
 
@@ -961,20 +1099,8 @@ export class MemMachine implements INodeType {
         );
       }
 
-      // Initialize tracer if enabled for AI Agent memory
-      const tracingEnabled = this.getNodeParameter('enableTracing', itemIndex, false) as boolean;
-      let tracer: MemoryTracer | undefined = undefined;
-      
-      if (tracingEnabled) {
-        const tracingConfig: TracingConfig = {
-          enabled: true,
-          endpoint: this.getNodeParameter('jaegerEndpoint', itemIndex) as string,
-          protocol: this.getNodeParameter('tracingProtocol', itemIndex, 'http') as 'http' | 'udp' | 'grpc',
-          serviceName: `memmachine-memory-${sessionId.trim()}`,
-        };
-        tracer = new MemoryTracer();
-        tracer.initialize(tracingConfig);
-      }
+      // Legacy tracer (no-op, kept for backward compatibility)
+      const tracer: MemoryTracer | undefined = undefined;
 
       // Create MemMachineMemory instance with configuration
       const memory = new MemMachineMemory({

@@ -1,0 +1,69 @@
+{
+  "name": "n8n-nodes-memory",
+  "version": "0.2.2",
+  "description": "n8n community node for MemMachine conversational memory integration with AI Agents",
+  "keywords": [
+    "n8n",
+    "n8n-community-node-package",
+    "memory",
+    "ai-agent",
+    "memmachine",
+    "conversation",
+    "context"
+  ],
+  "license": "MIT",
+  "homepage": "https://memmachine.ai",
+  "author": {
+    "name": "Christian Kniep",
+    "email": "christian.kniep@memverge.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MemMachine/n8n-nodes-memmachine"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc && cp -r nodes/Memory/*.png dist/nodes/Memory/ 2>/dev/null || true && cp package.json dist/",
+    "dev": "tsc --watch",
+    "dev:docker": "./start-dev.sh",
+    "docker:start": "docker-compose up -d",
+    "docker:stop": "docker-compose down",
+    "docker:logs": "docker-compose logs -f n8n",
+    "docker:restart": "docker-compose restart n8n",
+    "test:tracer": "npm run build && ts-node test/tracer.test.ts",
+    "format": "prettier --write '**/*.{ts,json,md}'",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "echo 'Manual workflow testing via npm run dev'"
+  },
+  "files": [
+    "dist"
+  ],
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "credentials": [
+      "dist/credentials/MemMachineApi.credentials.js"
+    ],
+    "nodes": [
+      "dist/nodes/Memory/Memory.node.js"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "axios": "^1.13.2",
+    "eslint": "^9.0.0",
+    "eslint-config-prettier": "^9.0.0",
+    "n8n-workflow": "^1.116.0",
+    "prettier": "^3.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.0"
+  },
+  "peerDependencies": {
+    "n8n-workflow": ">=1.107.0"
+  }
+}

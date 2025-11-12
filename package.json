@@ -1,6 +1,6 @@
 {
   "name": "@memmachine/n8n-nodes-memmachine",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "n8n community node for MemMachine conversational memory integration with AI Agents",
   "main": "dist/index.js",
   "author": {
