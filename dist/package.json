@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-memory",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "n8n community node for MemMachine conversational memory integration with AI Agents",
   "keywords": [
     "n8n",

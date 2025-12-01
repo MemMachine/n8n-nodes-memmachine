@@ -38,7 +38,7 @@ class MemMachineApi {
     test = {
         request: {
             baseURL: '={{$credentials.apiEndpoint}}',
-            url: '/health',
+            url: '/api/v2/health',
             method: 'GET',
         },
     };

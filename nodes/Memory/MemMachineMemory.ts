@@ -29,6 +29,12 @@ export interface MemMachineMemoryConfig {
   /** API authentication key (optional for local development) */
   apiKey?: string;
   
+  /** V2 API - Organization identifier (required) */
+  orgId: string;
+  
+  /** V2 API - Project identifier (required) */
+  projectId: string;
+  
   /** Organization or group identifier */
   groupId: string;
   
@@ -94,6 +100,14 @@ export class MemMachineMemory {
   public outputKey = 'output';
   
   constructor(config: MemMachineMemoryConfig) {
+    // T010: Validate v2 API required fields (FR-012)
+    if (!config.orgId || config.orgId.trim() === '') {
+      throw new Error('MemMachine API v2 requires organization ID (orgId)');
+    }
+    if (!config.projectId || config.projectId.trim() === '') {
+      throw new Error('MemMachine API v2 requires project ID (projectId)');
+    }
+    
     // Store MemMachine-specific configuration
     this.config = {
       ...config,
@@ -138,25 +152,20 @@ export class MemMachineMemory {
         contextWindowLength: this.config.contextWindowLength,
       });
 
-      // Build search request to MemMachine API
+      // T027-T028: Build v2 search request with org_id/project_id
       const searchBody = {
-        session: {
-          group_id: this.config.groupId,
-          agent_id: this.config.agentId,
-          user_id: this.config.userId,
-          session_id: this.config.sessionId,
-        },
+        org_id: this.config.orgId,
+        project_id: this.config.projectId,
         query: '', // Empty query to get all memories
-        limit: this.config.contextWindowLength,
-        filter: {
+        top_k: this.config.contextWindowLength,
+        types: [], // Empty array to get all memory types (episodic + semantic)
+        filter: JSON.stringify({
           session_id: this.config.sessionId, // Filter by current session
-          category: 'history', // Only get conversation history (not profile)
-        },
+        }),
       };
 
       const headers = {
         'Content-Type': 'application/json',
-        'session-id': this.config.sessionId,
         ...(this.config.apiKey && { Authorization: `Bearer ${this.config.apiKey}` }),
       };
 
@@ -164,10 +173,11 @@ export class MemMachineMemory {
       const searchSpan = this.config.tracer?.startSpan('memmachine.search', {
         attributes: {
           'http.method': 'POST',
-          'http.url': `${this.config.apiUrl}/v1/memories/search`,
+          'http.url': `${this.config.apiUrl}/api/v2/memories/search`,
           'memmachine.session.id': this.config.sessionId,
           'memmachine.session.group_id': this.config.groupId,
-          'memmachine.query.limit': this.config.contextWindowLength || 10,
+          'memmachine.query.top_k': this.config.contextWindowLength || 10,
+          'memmachine.query.types': JSON.stringify(['episodic']),
         },
       });
 
@@ -176,15 +186,17 @@ export class MemMachineMemory {
       if (sanitizedHeaders.Authorization) {
         sanitizedHeaders.Authorization = sanitizedHeaders.Authorization.substring(0, 15) + '***';
       }
-      searchSpan && this.config.tracer?.addEvent(searchSpan, 'memmachine.search.headers', sanitizedHeaders);
+      void (searchSpan && this.config.tracer?.addEvent(searchSpan, 'memmachine.search.headers', sanitizedHeaders));
 
-      // Add event with request payload
-      searchSpan && this.config.tracer?.addEvent(searchSpan, 'memmachine.search.payload', {
-        'payload.session': JSON.stringify(searchBody.session),
+      // Add event with v2 request payload
+      void (searchSpan && this.config.tracer?.addEvent(searchSpan, 'memmachine.search.payload', {
+        'payload.org_id': searchBody.org_id,
+        'payload.project_id': searchBody.project_id,
         'payload.query': searchBody.query,
-        'payload.limit': searchBody.limit || 10,
-        'payload.filter': JSON.stringify(searchBody.filter),
-      });
+        'payload.top_k': searchBody.top_k || 10,
+        'payload.types': JSON.stringify(searchBody.types),
+        'payload.filter': searchBody.filter,
+      }));
 
       // Add request send event with structured KV logs
       if (searchSpan && this.config.tracer) {
@@ -196,35 +208,36 @@ export class MemMachineMemory {
         
         this.config.tracer.addEvent(searchSpan, 'request.send', {
           'http.method': 'POST',
-          'http.url': `${this.config.apiUrl}/v1/memories/search`,
-          'http.target': '/v1/memories/search',
+          'http.url': `${this.config.apiUrl}/api/v2/memories/search`,
+          'http.target': '/api/v2/memories/search',
           ...headerLogKV,
           'body': JSON.stringify(searchBody),
         });
       }
 
-      // Start nested cloud tracer span for the API call
+      // T035: Start nested cloud tracer span for the API call
       let apiCallTraceId = '';
       const requestBodyFormatted = JSON.stringify(searchBody, null, 2); // Pretty print
       const requestBody = JSON.stringify(searchBody); // Compact for actual request
       if (this.config.cloudTracer && loadTraceId) {
         apiCallTraceId = this.config.cloudTracer.startOperation('search', {
           operation: 'api_call_search',
-          endpoint: '/v1/memories/search',
+          endpoint: '/api/v2/memories/search',
           sessionId: this.config.sessionId,
           'request.body': requestBodyFormatted,
           'request.body.size': requestBody.length,
         }, loadTraceId);
       }
 
-      // Make request to MemMachine Search API
-      const response = await fetch(`${this.config.apiUrl}/v1/memories/search`, {
+      // T026: Make request to MemMachine v2 Search API
+      const response = await fetch(`${this.config.apiUrl}/api/v2/memories/search`, {
         method: 'POST',
         headers,
         body: requestBody,
       });
 
-      const data = await response.json() as { content?: { episodic_memory?: any[]; profile_memory?: any[] } };
+      // T029: Parse v2 response (flat memories array with type field or nested content structure)
+      const data = await response.json() as { memories?: any[]; content?: any };
       const apiResponseBody = JSON.stringify(data, null, 2); // Pretty print with 2-space indentation
 
       // Complete API call span
@@ -271,15 +284,58 @@ export class MemMachineMemory {
         });
       }
       
-      // Extract and process memories
-      const content = data.content || {};
-      const rawEpisodicMemory = content.episodic_memory || [];
-      const rawProfileMemory = content.profile_memory || [];
+      // T029-T030: Extract and process v2 memories (handle both flat and nested formats)
+      let rawMemories: any[] = [];
+      let rawEpisodicMemory: any[] = [];
+      let rawProfileMemory: any[] = [];
+      let rawSemanticMemory: any[] = [];
+      let episodeSummary: string[] = [];
+      
+      // Check if response has flat memories array (documented v2 format)
+      if (data.memories && Array.isArray(data.memories)) {
+        rawMemories = data.memories;
+        rawEpisodicMemory = rawMemories.filter((m: any) => m.type === 'episodic');
+        rawProfileMemory = rawMemories.filter((m: any) => m.type === 'profile');
+      }
+      // Check if response has nested content structure (actual API response)
+      else if (data.content && typeof data.content === 'object') {
+        const content = data.content as any;
+        
+        // Extract episodic memories from nested structure
+        if (content.episodic_memory) {
+          const episodicMem = content.episodic_memory;
+          
+          // Collect episodes from short_term_memory
+          if (episodicMem.short_term_memory?.episodes) {
+            rawEpisodicMemory.push(...episodicMem.short_term_memory.episodes);
+          }
+          
+          // Extract episode summaries from short_term_memory
+          if (episodicMem.short_term_memory?.episode_summary && Array.isArray(episodicMem.short_term_memory.episode_summary)) {
+            episodeSummary = episodicMem.short_term_memory.episode_summary.filter((s: string) => s && s.trim() !== '');
+          }
+          
+          // Collect episodes from long_term_memory
+          if (episodicMem.long_term_memory?.episodes) {
+            rawEpisodicMemory.push(...episodicMem.long_term_memory.episodes);
+          }
+        }
+        
+        // Extract semantic/profile memories
+        if (content.semantic_memory && Array.isArray(content.semantic_memory)) {
+          rawSemanticMemory = content.semantic_memory;
+          rawProfileMemory = content.semantic_memory; // Legacy compatibility
+        }
+        
+        rawMemories = [...rawEpisodicMemory, ...rawSemanticMemory];
+      }
       
       // Add response metrics to span
       searchSpan && this.config.tracer?.addAttributes(searchSpan, {
-        'memmachine.response.episodic_count': Array.isArray(rawEpisodicMemory) ? rawEpisodicMemory.length : 0,
-        'memmachine.response.profile_count': Array.isArray(rawProfileMemory) ? rawProfileMemory.length : 0,
+        'memmachine.response.total_count': rawMemories.length,
+        'memmachine.response.episodic_count': rawEpisodicMemory.length,
+        'memmachine.response.semantic_count': rawSemanticMemory.length,
+        'memmachine.response.profile_count': rawProfileMemory.length,
       });
 
       // Start nested cloud tracer span for memory processing
@@ -295,7 +351,9 @@ export class MemMachineMemory {
       
       // If template is enabled, return formatted context as system message
       if (this.config.enableTemplate && this.config.contextTemplate) {
-        const result = this.formatTemplatedMemory(rawEpisodicMemory, rawProfileMemory);
+        const result = this.formatTemplatedMemory(rawEpisodicMemory, rawProfileMemory, rawSemanticMemory, episodeSummary);
+        
+        const renderedContent = result.chat_history?.[0]?.content || '';
         
         // Complete processing span
         if (processingTraceId && this.config.cloudTracer) {
@@ -303,7 +361,8 @@ export class MemMachineMemory {
             success: true,
             metadata: {
               operation: 'format_template',
-              outputLength: result.chat_history?.[0]?.content?.length || 0,
+              outputLength: renderedContent.length,
+              renderedContext: renderedContent.length > 2000 ? renderedContent.substring(0, 2000) + '\n\n...[truncated]' : renderedContent,
             },
           });
         }
@@ -311,30 +370,31 @@ export class MemMachineMemory {
         return result;
       }
       
-      // Otherwise, return raw messages for standard LangChain flow
+      // T030: Otherwise, return raw messages for standard LangChain flow (v2 format)
       const messages: BaseMessage[] = [];
       
       if (Array.isArray(rawEpisodicMemory)) {
-        for (const group of rawEpisodicMemory) {
-          if (Array.isArray(group)) {
-            for (const item of group) {
-              if (item && item.content && item.content.trim() !== '') {
-                // Determine if this is a user message or agent message based on producer
-                const isUserMessage = this.config.userId.includes(item.producer_id);
-                
-                if (isUserMessage) {
-                  messages.push({
-                    type: 'human',
-                    content: item.content,
-                    additional_kwargs: {},
-                  } as BaseMessage);
-                } else {
-                  messages.push({
-                    type: 'ai',
-                    content: item.content,
-                    additional_kwargs: {},
-                  } as BaseMessage);
-                }
+        for (const memory of rawEpisodicMemory) {
+          if (memory && Array.isArray(memory.messages) && memory.messages.length > 0) {
+            const message = memory.messages[0];
+            if (message.content && message.content.trim() !== '') {
+              // Determine if this is a user message or agent message based on producer
+              const isUserMessage = this.config.userId.some((uid: string) => 
+                message.producer && message.producer.includes(uid)
+              );
+              
+              if (isUserMessage) {
+                messages.push({
+                  type: 'human',
+                  content: message.content,
+                  additional_kwargs: {},
+                } as BaseMessage);
+              } else {
+                messages.push({
+                  type: 'ai',
+                  content: message.content,
+                  additional_kwargs: {},
+                } as BaseMessage);
               }
             }
           }
@@ -536,40 +596,42 @@ export class MemMachineMemory {
     parentTraceId: string = '',
     messageType: string = 'message',
   ): Promise<void> {
+    // T032-T034: Build v2 store request with messages array
     const storeBody = {
-      session: {
-        group_id: this.config.groupId,
-        agent_id: this.config.agentId,
-        user_id: this.config.userId,
-        session_id: this.config.sessionId,
-      },
-      producer,
-      produced_for: producedFor,
-      episode_content: content,
-      episode_type: 'dialog',
-      metadata: {
-        category: 'history', // Mark as conversation history
-        timestamp: new Date().toISOString(),
-      },
+      org_id: this.config.orgId,
+      project_id: this.config.projectId,
+      messages: [
+        {
+          content,
+          producer,
+          produced_for: producedFor,
+          role: producer.includes('agent') ? 'assistant' : 'user',
+          metadata: {
+            agent_id: this.config.agentId,
+            user_id: this.config.userId,
+            category: 'history',
+            timestamp: new Date().toISOString(),
+          },
+        },
+      ],
     };
 
     const headers = {
       'Content-Type': 'application/json',
-      'session-id': this.config.sessionId,
       ...(this.config.apiKey && { Authorization: `Bearer ${this.config.apiKey}` }),
     };
 
-    // Start span for MemMachine store API call
+    // T035: Start span for MemMachine store API call with v2 endpoint
     const storeSpan = this.config.tracer?.startSpan('memmachine.store', {
       attributes: {
         'http.method': 'POST',
-        'http.url': `${this.config.apiUrl}/v1/memories`,
+        'http.url': `${this.config.apiUrl}/api/v2/memories`,
         'memmachine.session.id': this.config.sessionId,
-        'memmachine.session.group_id': this.config.groupId,
+        'memmachine.org_id': this.config.orgId,
+        'memmachine.project_id': this.config.projectId,
         'memmachine.message.producer': producer,
         'memmachine.message.produced_for': producedFor,
         'memmachine.message.length': content.length,
-        'memmachine.episode.type': 'dialog',
       },
     });
 
@@ -580,14 +642,15 @@ export class MemMachineMemory {
     }
     storeSpan && this.config.tracer?.addEvent(storeSpan, 'memmachine.store.headers', sanitizedHeaders);
 
-    // Add event with request payload (truncate content if too long)
+    // Add event with v2 request payload (truncate content if too long)
     storeSpan && this.config.tracer?.addEvent(storeSpan, 'memmachine.store.payload', {
-      'payload.session': JSON.stringify(storeBody.session),
-      'payload.producer': producer,
-      'payload.produced_for': producedFor,
-      'payload.episode_content': content.length > 200 ? content.substring(0, 200) + '...' : content,
-      'payload.episode_type': storeBody.episode_type,
-      'payload.metadata': JSON.stringify(storeBody.metadata),
+      'payload.org_id': this.config.orgId,
+      'payload.project_id': this.config.projectId,
+      'payload.messages[0].producer': producer,
+      'payload.messages[0].produced_for': producedFor,
+      'payload.messages[0].content': content.length > 200 ? content.substring(0, 200) + '...' : content,
+      'payload.messages[0].role': storeBody.messages[0].role,
+      'payload.messages[0].metadata': JSON.stringify(storeBody.messages[0].metadata),
     });
 
     // Add request send event with structured KV logs
@@ -600,8 +663,8 @@ export class MemMachineMemory {
       
       this.config.tracer.addEvent(storeSpan, 'request.send', {
         'http.method': 'POST',
-        'http.url': `${this.config.apiUrl}/v1/memories`,
-        'http.target': '/v1/memories',
+        'http.url': `${this.config.apiUrl}/api/v2/memories`,
+        'http.target': '/api/v2/memories',
         ...headerLogKV,
         'body': JSON.stringify(storeBody),
       });
@@ -614,7 +677,7 @@ export class MemMachineMemory {
     if (this.config.cloudTracer && parentTraceId) {
       apiStoreTraceId = this.config.cloudTracer.startOperation('store', {
         operation: `api_call_store_${messageType}`,
-        endpoint: '/v1/memories',
+        endpoint: '/api/v2/memories',
         producer,
         messageLength: content.length,
         'request.body': storeRequestBodyFormatted.length > 500 ? storeRequestBodyFormatted.substring(0, 500) + '...[truncated]' : storeRequestBodyFormatted,
@@ -622,11 +685,50 @@ export class MemMachineMemory {
       }, parentTraceId);
     }
 
-    const response = await fetch(`${this.config.apiUrl}/v1/memories`, {
+    // T031: Make request to v2 Store API with auto-creation on 404
+    let response = await fetch(`${this.config.apiUrl}/api/v2/memories`, {
       method: 'POST',
       headers,
       body: storeRequestBody,
     });
+
+    // T048-T051: Auto-create project if 404 error
+    if (!response.ok && response.status === 404) {
+      const errorText = await response.clone().text();
+      if (errorText.toLowerCase().includes('project')) {
+        // Project not found, will auto-create with default configuration
+        
+        // T050: Create project with default configuration
+        const createProjectResponse = await fetch(`${this.config.apiUrl}/api/v2/projects`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            org_id: this.config.orgId,
+            project_id: this.config.projectId,
+            description: 'Auto-created by n8n workflow',
+            config: {
+              reranker: 'default',
+              embedder: 'default',
+            },
+          }),
+        });
+
+        // T050: Treat 409 Conflict as success (idempotency)
+        if (createProjectResponse.ok || createProjectResponse.status === 409) {
+          // Project created or already exists, retrying store operation
+          
+          // T051: Retry original store operation
+          response = await fetch(`${this.config.apiUrl}/api/v2/memories`, {
+            method: 'POST',
+            headers,
+            body: storeRequestBody,
+          });
+        } else {
+          const createErrorText = await createProjectResponse.text();
+          throw new Error(`Failed to auto-create project: ${createProjectResponse.status} ${createErrorText}`);
+        }
+      }
+    }
 
     const responseText = await response.clone().text();
     
@@ -689,49 +791,82 @@ export class MemMachineMemory {
   /**
    * Format memory using template and return as system message
    */
-  private formatTemplatedMemory(rawEpisodicMemory: any[], rawProfileMemory: any[]): MemoryVariables {
+  private formatTemplatedMemory(rawEpisodicMemory: any[], rawProfileMemory: any[], rawSemanticMemory: any[], episodeSummary: string[]): MemoryVariables {
     console.log('[MemMachineMemory] Formatting templated memory', {
       episodicCount: rawEpisodicMemory.length,
       profileCount: rawProfileMemory.length,
+      semanticCount: rawSemanticMemory.length,
+      summaryCount: episodeSummary.length,
     });
 
-    // Flatten and transform episodic memories to expected structure
+    // Flatten and transform episodic memories to expected structure with deduplication
     const flattenedMemories: EpisodicMemoryItem[] = [];
+    const seenEpisodes = new Set<string>();
+    
     if (Array.isArray(rawEpisodicMemory)) {
       for (const group of rawEpisodicMemory) {
         if (Array.isArray(group)) {
           for (const item of group) {
             if (item && typeof item === 'object' && item.content && item.content.trim() !== '') {
-              flattenedMemories.push({
-                episode_content: item.content,
-                producer: item.producer_id || 'unknown',
-                produced_for: item.produced_for_id || 'unknown',
-                episode_type: item.episode_type || 'dialog',
-                timestamp: item.timestamp,
-                uuid: item.uuid,
-                content_type: item.content_type,
-                group_id: item.group_id,
-                session_id: item.session_id,
-                user_metadata: item.user_metadata,
-              });
+              const content = item.content;
+              const producer = item.producer_id || 'unknown';
+              const producedFor = item.produced_for_id || 'unknown';
+              
+              // Create unique key for deduplication
+              const episodeKey = `${content}|${producer}|${producedFor}`;
+              
+              // Skip if we've already seen this exact episode
+              if (!seenEpisodes.has(episodeKey)) {
+                seenEpisodes.add(episodeKey);
+                
+                flattenedMemories.push({
+                  episode_content: content,
+                  producer,
+                  produced_for: producedFor,
+                  episode_type: item.episode_type || 'dialog',
+                  timestamp: item.timestamp,
+                  uuid: item.uuid,
+                  content_type: item.content_type,
+                  group_id: item.group_id,
+                  session_id: item.session_id,
+                  user_metadata: item.user_metadata,
+                });
+              }
             }
           }
         }
       }
     }
 
-    // Transform profile memory to expected structure
+    // Transform profile memory to expected structure with deduplication
     const profileMemoryFacts: any[] = [];
+    const deduplicatedSemanticMemory: any[] = [];
+    const seenFacts = new Set<string>();
+    
     if (Array.isArray(rawProfileMemory)) {
       for (const item of rawProfileMemory) {
         if (item && typeof item === 'object') {
-          profileMemoryFacts.push({
-            subject: item.tag || 'General',
-            predicate: item.feature || 'property',
-            object: item.value || '',
-            confidence: item.metadata?.similarity_score,
-            source: `id_${item.metadata?.id}`,
-          });
+          const tag = item.tag || 'General';
+          const feature = item.feature || 'property';
+          const value = item.value || '';
+          
+          // Create unique key for deduplication
+          const factKey = `${tag}|${feature}|${value}`;
+          
+          // Skip if we've already seen this exact fact
+          if (!seenFacts.has(factKey) && value.trim() !== '') {
+            seenFacts.add(factKey);
+            
+            profileMemoryFacts.push({
+              subject: tag,
+              predicate: feature,
+              object: value,
+              confidence: item.metadata?.similarity_score,
+              source: `id_${item.metadata?.id}`,
+            });
+            
+            deduplicatedSemanticMemory.push(item);
+          }
         }
       }
     }
@@ -746,14 +881,17 @@ export class MemMachineMemory {
     const shortTermCount = this.config.shortTermCount || 10;
     const categorized = categorizeMemories(flattenedMemories, historyCount, shortTermCount);
 
-    // Render template
+    // Render template with all memory types
     const contextText = renderTemplate(
       this.config.contextTemplate!,
       categorized,
       profileMemory,
+      deduplicatedSemanticMemory,
+      episodeSummary,
     );
 
     console.log('[MemMachineMemory] Templated context length:', contextText.length);
+    console.log('[MemMachineMemory] Rendered context preview:', contextText.substring(0, 500));
 
     // Return formatted context as a system message (n8n compatible format)
     return {

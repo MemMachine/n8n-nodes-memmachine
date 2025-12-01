@@ -74,7 +74,7 @@ class MemMachine {
                         routing: {
                             request: {
                                 method: 'POST',
-                                url: '/v1/memories',
+                                url: '/api/v2/memories',
                             },
                         },
                     },
@@ -86,7 +86,7 @@ class MemMachine {
                         routing: {
                             request: {
                                 method: 'POST',
-                                url: '/v1/memories/search',
+                                url: '/api/v2/memories/search',
                             },
                         },
                     },
@@ -134,21 +134,22 @@ class MemMachine {
                         enableMemoryTemplate: [true],
                     },
                 },
-                default: `# Conversation Context
+                default: `# Memory Context
 
-## Recent History
-{{history}}
+**Instructions**: Use semantic memory as ground truth about the user. Enrich your understanding with short-term memory for recent context and long-term memory for historical patterns.
 
-## Short-Term Memory
+## User Profile (Semantic Memory)
+{{semanticMemory}}
+
+## Recent Context (Short-Term Memory)
 {{shortTermMemory}}
 
-## Long-Term Memory
-{{longTermMemory}}
+{{episodeSummary}}
 
-## User Profile
-{{profileMemory}}`,
-                description: 'Template for formatting memory context. Available placeholders: {{history}}, {{shortTermMemory}}, {{longTermMemory}}, {{profileMemory}}',
-                hint: 'The formatted context will be provided to the AI as a single system message',
+## Historical Context (Long-Term Memory)
+{{longTermMemory}}`,
+                description: 'Template for formatting memory context with semantic features, short-term, and long-term episodes',
+                hint: 'Semantic memory provides verified facts, short-term provides recent context, long-term provides historical patterns',
             },
             {
                 displayName: 'Template Options',
@@ -188,14 +189,24 @@ class MemMachine {
                 ],
             },
             {
-                displayName: 'Session ID',
-                name: 'sessionId',
+                displayName: 'Organization ID',
+                name: 'orgId',
+                type: 'string',
+                default: 'group_v1',
+                required: true,
+                placeholder: 'group_v1',
+                description: 'Organization identifier for MemMachine API v2. All projects belong to an organization.',
+                hint: 'Required for v2 API - defines the top-level tenant for memory storage',
+            },
+            {
+                displayName: 'Project ID',
+                name: 'projectId',
                 type: 'string',
                 default: '={{$json.sessionId}}',
                 required: true,
                 placeholder: '={{$json.sessionId}}',
-                description: 'Conversation session identifier for isolation. Typically provided by Chat Trigger.',
-                hint: 'For memory mode: Isolates conversation history by session. For manual mode: Used for filtering.',
+                description: 'Project identifier for memory isolation. Projects are automatically created if they don\'t exist.',
+                hint: 'Required for v2 API - all memories are stored within a project. Auto-created on first use with default configuration.',
             },
             {
                 displayName: 'Group ID',
@@ -219,9 +230,9 @@ class MemMachine {
                 displayName: 'User ID',
                 name: 'userId',
                 type: 'string',
-                default: '={{$json.userId}}',
+                default: 'user_v1',
                 required: true,
-                placeholder: 'user_456',
+                placeholder: 'user_v1',
                 description: 'User identifier (can be comma-separated for multiple users)',
             },
             {
@@ -234,7 +245,7 @@ class MemMachine {
                         operation: ['store'],
                     },
                 },
-                default: '',
+                default: '={{$parameter.userId}}',
                 required: true,
                 placeholder: 'user_456 or agent_assistant',
                 description: 'Who created this message (user_id or agent_id)',
@@ -249,7 +260,7 @@ class MemMachine {
                         operation: ['store'],
                     },
                 },
-                default: '',
+                default: '={{$parameter.agentId}}',
                 required: true,
                 placeholder: 'agent_assistant or user_456',
                 description: 'Who this message is intended for (user_id or agent_id)',
@@ -267,7 +278,7 @@ class MemMachine {
                 typeOptions: {
                     rows: 4,
                 },
-                default: '={{$json.content}}',
+                default: '={{$json.chatInput}}',
                 required: true,
                 description: 'The message text to store',
             },
@@ -321,7 +332,7 @@ class MemMachine {
                         operation: ['enrich'],
                     },
                 },
-                default: '={{$json.content}}',
+                default: '={{$json.chatInput}}',
                 required: true,
                 description: 'Natural language query to search for relevant memories',
             },
@@ -395,21 +406,22 @@ class MemMachine {
                         enableTemplate: [true],
                     },
                 },
-                default: `# Conversation Context
+                default: `# Memory Context
 
-## Recent History
-{{history}}
+**Instructions**: Use semantic memory as ground truth about the user. Enrich your understanding with short-term memory for recent context and long-term memory for historical patterns.
 
-## Short-Term Memory
+## User Profile (Semantic Memory)
+{{semanticMemory}}
+
+## Recent Context (Short-Term Memory)
 {{shortTermMemory}}
 
-## Long-Term Memory
-{{longTermMemory}}
+{{episodeSummary}}
 
-## Profile Information
-{{profileMemory}}`,
-                description: 'Markdown template for formatting context. Supported placeholders: {{history}}, {{shortTermMemory}}, {{longTermMemory}}, {{profileMemory}}',
-                hint: 'Use {{history}}, {{shortTermMemory}}, {{longTermMemory}}, and {{profileMemory}} as placeholders in your template',
+## Historical Context (Long-Term Memory)
+{{longTermMemory}}`,
+                description: 'Markdown template for formatting memory context with semantic features, short-term, and long-term episodes',
+                hint: 'Semantic memory provides verified facts, short-term provides recent context, long-term provides historical patterns',
             },
             {
                 displayName: 'Advanced Options',
@@ -562,11 +574,19 @@ class MemMachine {
             let operationSpan = undefined;
             let traceId = '';
             try {
+                const orgId = this.getNodeParameter('orgId', i);
+                const projectId = this.getNodeParameter('projectId', i);
+                if (!orgId || orgId.trim() === '') {
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'MemMachine API v2 requires organization ID. Please provide a valid organization identifier.', { itemIndex: i });
+                }
+                if (!projectId || projectId.trim() === '') {
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'MemMachine API v2 requires project ID. Please provide a valid project identifier. Projects are automatically created if they don\'t exist.', { itemIndex: i });
+                }
                 const session = {
                     group_id: this.getNodeParameter('groupId', i),
                     agent_id: this.getNodeParameter('agentId', i).split(',').map((id) => id.trim()),
                     user_id: this.getNodeParameter('userId', i).split(',').map((id) => id.trim()),
-                    session_id: this.getNodeParameter('sessionId', i),
+                    session_id: projectId,
                 };
                 if (operation === 'store') {
                     traceId = cloudTracer.startOperation('store', {
@@ -602,30 +622,37 @@ class MemMachine {
                     const requestOptions = {
                         method: 'POST',
                         baseURL,
-                        url: '/v1/memories',
+                        url: '/api/v2/memories',
                         headers: {
                             'session-id': session.session_id,
                         },
                         body: {
-                            session,
-                            producer,
-                            produced_for: producedFor,
-                            episode_content: episodeContent,
-                            episode_type: episodeType,
-                            metadata,
+                            org_id: orgId.trim(),
+                            project_id: projectId.trim(),
+                            messages: [
+                                {
+                                    content: episodeContent,
+                                    producer,
+                                    produced_for: producedFor,
+                                    role: producer.includes('agent') ? 'assistant' : 'user',
+                                    metadata: {
+                                        ...metadata,
+                                        agent_id: Array.isArray(session.agent_id) ? session.agent_id[0] : session.agent_id,
+                                        user_id: Array.isArray(session.user_id) ? session.user_id[0] : session.user_id,
+                                    },
+                                },
+                            ],
                         },
                         json: true,
                         timeout: 30000,
                     };
-                    console.log('MemMachine Store - Session object:', JSON.stringify(session, null, 2));
-                    console.log('MemMachine Store - Headers:', requestOptions.headers);
                     tracer.addEvent(operationSpan, 'memmachine.store.request.headers', {
-                        'session-id': session.session_id,
                         'Content-Type': 'application/json',
                     });
                     tracer.addEvent(operationSpan, 'memmachine.store.request.payload', {
-                        'payload.session': JSON.stringify(session),
-                        'payload.producer': producer,
+                        'payload.org_id': orgId,
+                        'payload.project_id': projectId,
+                        'payload.messages[0].producer': producer,
                         'payload.produced_for': producedFor,
                         'payload.episode_content': episodeContent.length > 200 ? episodeContent.substring(0, 200) + '...' : episodeContent,
                         'payload.episode_type': episodeType,
@@ -638,12 +665,62 @@ class MemMachine {
                     }
                     tracer.addEvent(operationSpan, 'request.send', {
                         'http.method': 'POST',
-                        'http.url': `${baseURL}/v1/memories`,
-                        'http.target': '/v1/memories',
+                        'http.url': `${baseURL}/api/v2/memories`,
+                        'http.target': '/api/v2/memories',
                         ...headerLogKV,
                         'body': JSON.stringify(requestOptions.body),
                     });
-                    const response = await this.helpers.httpRequestWithAuthentication.call(this, 'memMachineApi', requestOptions);
+                    let response;
+                    try {
+                        response = await this.helpers.httpRequestWithAuthentication.call(this, 'memMachineApi', requestOptions);
+                    }
+                    catch (error) {
+                        const errorDetails = {
+                            statusCode: error.statusCode,
+                            message: error.message,
+                            body: error.response?.body || error.cause?.response?.body,
+                            requestBody: requestOptions.body,
+                        };
+                        throw new n8n_workflow_1.NodeOperationError(this.getNode(), `MemMachine API error (${error.statusCode}): ${JSON.stringify(errorDetails, null, 2)}`, { itemIndex: i });
+                        if (error.statusCode === 404 && error.message && error.message.toLowerCase().includes('project')) {
+                            const createProjectOptions = {
+                                method: 'POST',
+                                baseURL,
+                                url: '/api/v2/projects',
+                                body: {
+                                    org_id: orgId.trim(),
+                                    project_id: projectId.trim(),
+                                    description: 'Auto-created by n8n workflow',
+                                    config: {
+                                        reranker: 'default',
+                                        embedder: 'default',
+                                    },
+                                },
+                                json: true,
+                                timeout: 30000,
+                            };
+                            try {
+                                cloudTracer.addEvent(traceId, 'project.auto_create', {
+                                    org_id: orgId,
+                                    project_id: projectId,
+                                    description: 'Auto-created by n8n workflow',
+                                });
+                                await this.helpers.httpRequestWithAuthentication.call(this, 'memMachineApi', createProjectOptions);
+                                response = await this.helpers.httpRequestWithAuthentication.call(this, 'memMachineApi', requestOptions);
+                            }
+                            catch (createError) {
+                                if (createError.statusCode === 409) {
+                                    response = await this.helpers.httpRequestWithAuthentication.call(this, 'memMachineApi', requestOptions);
+                                }
+                                else {
+                                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Failed to auto-create project '${projectId}' in organization '${orgId}': ${createError.message}`, { itemIndex: i });
+                                }
+                            }
+                        }
+                        else {
+                            throw error;
+                        }
+                    }
                     const responseBody = JSON.stringify(response || { success: true });
                     tracer.addEvent(operationSpan, 'response.received', {
                         'http.status_code': 200,
@@ -665,11 +742,10 @@ class MemMachine {
                             'http.method': 'POST',
                             'http.url': `${baseURL}/v1/memories`,
                             'http.target': '/v1/memories',
-                            'request.headers': JSON.stringify({ 'session-id': session.session_id }),
                             'request.body': JSON.stringify(requestOptions.body),
                             'request.body.size': JSON.stringify(requestOptions.body).length,
                             'http.status_code': 200,
-                            'response.body': responseBody.substring(0, 500),
+                            'response.body': responseBody,
                             'response.body.size': responseBody.length,
                         },
                     });
@@ -720,30 +796,34 @@ class MemMachine {
                     }
                     const credentials = await this.getCredentials('memMachineApi');
                     const baseURL = credentials.apiEndpoint;
+                    const searchBody = {
+                        org_id: orgId.trim(),
+                        project_id: projectId.trim(),
+                        query: query || '',
+                        types: [],
+                        top_k: limit,
+                        filter: '',
+                    };
                     const requestOptions = {
                         method: 'POST',
                         baseURL,
-                        url: '/v1/memories/search',
+                        url: '/api/v2/memories/search',
                         headers: {
                             'session-id': session.session_id,
                         },
-                        body: {
-                            session,
-                            query,
-                            limit,
-                            ...(Object.keys(filter).length > 0 && { filter }),
-                        },
+                        body: searchBody,
                         json: true,
                         timeout: 30000,
                     };
                     tracer.addEvent(operationSpan, 'memmachine.search.request.headers', {
-                        'session-id': session.session_id,
                         'Content-Type': 'application/json',
                     });
                     tracer.addEvent(operationSpan, 'memmachine.search.request.payload', {
-                        'payload.session': JSON.stringify(session),
+                        'payload.org_id': orgId,
+                        'payload.project_id': projectId,
                         'payload.query': query,
-                        'payload.limit': limit,
+                        'payload.top_k': limit,
+                        'payload.types': JSON.stringify(['episodic']),
                         'payload.filter': Object.keys(filter).length > 0 ? JSON.stringify(filter) : '{}',
                     });
                     const requestHeaders = requestOptions.headers || {};
@@ -753,19 +833,54 @@ class MemMachine {
                     }
                     tracer.addEvent(operationSpan, 'request.send', {
                         'http.method': 'POST',
-                        'http.url': `${baseURL}/v1/memories/search`,
-                        'http.target': '/v1/memories/search',
+                        'http.url': `${baseURL}/api/v2/memories/search`,
+                        'http.target': '/api/v2/memories/search',
                         ...headerLogKV,
                         'body': JSON.stringify(requestOptions.body),
                     });
                     const response = await this.helpers.httpRequestWithAuthentication.call(this, 'memMachineApi', requestOptions);
                     const responseData = response;
-                    const content = responseData.content || {};
-                    const rawEpisodicMemory = content.episodic_memory || [];
-                    const rawProfileMemory = content.profile_memory || [];
+                    let rawMemories = [];
+                    let episodicMemoriesRaw = [];
+                    let profileMemoriesRaw = [];
+                    let shortTermEpisodesRaw = [];
+                    let longTermEpisodesRaw = [];
+                    if (responseData.memories && Array.isArray(responseData.memories)) {
+                        rawMemories = responseData.memories;
+                        episodicMemoriesRaw = rawMemories.filter((m) => m.type === 'episodic');
+                        profileMemoriesRaw = rawMemories.filter((m) => m.type === 'profile');
+                    }
+                    else if (responseData.content && typeof responseData.content === 'object') {
+                        const content = responseData.content;
+                        if (content.episodic_memory) {
+                            const episodicMem = content.episodic_memory;
+                            if (episodicMem.short_term_memory?.episodes) {
+                                shortTermEpisodesRaw = episodicMem.short_term_memory.episodes;
+                                episodicMemoriesRaw.push(...shortTermEpisodesRaw);
+                            }
+                            if (episodicMem.long_term_memory?.episodes) {
+                                longTermEpisodesRaw = episodicMem.long_term_memory.episodes;
+                                episodicMemoriesRaw.push(...longTermEpisodesRaw);
+                            }
+                        }
+                        if (content.semantic_memory && Array.isArray(content.semantic_memory)) {
+                            profileMemoriesRaw = content.semantic_memory;
+                        }
+                        rawMemories = [...episodicMemoriesRaw, ...profileMemoriesRaw];
+                    }
+                    let episodeSummary = [];
+                    if (responseData.content && typeof responseData.content === 'object') {
+                        const content = responseData.content;
+                        if (content.episodic_memory?.short_term_memory?.episode_summary &&
+                            Array.isArray(content.episodic_memory.short_term_memory.episode_summary)) {
+                            episodeSummary = content.episodic_memory.short_term_memory.episode_summary
+                                .filter((s) => s && s.trim() !== '');
+                        }
+                    }
                     tracer.addAttributes(operationSpan, {
-                        'memmachine.response.episodic_count': Array.isArray(rawEpisodicMemory) ? rawEpisodicMemory.length : 0,
-                        'memmachine.response.profile_count': Array.isArray(rawProfileMemory) ? rawProfileMemory.length : 0,
+                        'memmachine.response.total_count': rawMemories.length,
+                        'memmachine.response.episodic_count': episodicMemoriesRaw.length,
+                        'memmachine.response.profile_count': profileMemoriesRaw.length,
                     });
                     const responseBody = JSON.stringify(responseData);
                     tracer.addEvent(operationSpan, 'response.received', {
@@ -775,48 +890,73 @@ class MemMachine {
                         'body.size': responseBody.length,
                     });
                     const flattenedMemories = [];
-                    if (Array.isArray(rawEpisodicMemory)) {
-                        for (const group of rawEpisodicMemory) {
-                            if (Array.isArray(group)) {
-                                for (const item of group) {
-                                    if (item && typeof item === 'object' && item.content && item.content.trim() !== '') {
+                    const seenEpisodes = new Set();
+                    if (Array.isArray(episodicMemoriesRaw)) {
+                        for (const memory of episodicMemoriesRaw) {
+                            if (memory && typeof memory === 'object') {
+                                let content = '';
+                                let producer = 'unknown';
+                                let producedFor = 'unknown';
+                                let episodeType = 'dialog';
+                                let timestamp = memory.created_at || new Date().toISOString();
+                                let uuid = memory.id || memory.uid || '';
+                                let metadata = {};
+                                if (Array.isArray(memory.messages) && memory.messages.length > 0) {
+                                    content = memory.messages[0].content || '';
+                                    producer = memory.messages[0].producer || 'unknown';
+                                    producedFor = memory.messages[0].produced_for || 'unknown';
+                                    metadata = memory.messages[0].metadata || {};
+                                }
+                                else if (memory.content) {
+                                    content = memory.content;
+                                    producer = memory.producer_id || memory.producer || 'unknown';
+                                    producedFor = memory.produced_for_id || memory.produced_for || 'unknown';
+                                    episodeType = memory.episode_type || 'message';
+                                    metadata = memory.metadata || {};
+                                }
+                                if (content && content.trim() !== '') {
+                                    const episodeKey = `${content}|${producer}|${producedFor}`;
+                                    if (!seenEpisodes.has(episodeKey)) {
+                                        seenEpisodes.add(episodeKey);
                                         flattenedMemories.push({
-                                            episode_content: item.content,
-                                            producer: item.producer_id || 'unknown',
-                                            produced_for: item.produced_for_id || 'unknown',
-                                            episode_type: item.episode_type || 'dialog',
-                                            timestamp: item.timestamp,
-                                            uuid: item.uuid,
-                                            content_type: item.content_type,
-                                            group_id: item.group_id,
-                                            session_id: item.session_id,
-                                            user_metadata: item.user_metadata,
+                                            episode_content: content,
+                                            producer,
+                                            produced_for: producedFor,
+                                            episode_type: episodeType,
+                                            timestamp,
+                                            uuid,
+                                            content_type: 'text',
+                                            group_id: session.group_id,
+                                            session_id: session.session_id,
+                                            user_metadata: metadata,
                                         });
                                     }
                                 }
-                            }
-                            else if (group && typeof group === 'string' && group.trim() !== '') {
-                                flattenedMemories.push({
-                                    episode_content: group,
-                                    producer: 'unknown',
-                                    produced_for: 'unknown',
-                                    episode_type: 'dialog',
-                                });
                             }
                         }
                     }
                     const episodicMemories = flattenedMemories;
                     const profileMemoryFacts = [];
-                    if (Array.isArray(rawProfileMemory)) {
-                        for (const item of rawProfileMemory) {
-                            if (item && typeof item === 'object') {
-                                profileMemoryFacts.push({
-                                    subject: item.tag || 'General',
-                                    predicate: item.feature || 'property',
-                                    object: item.value || '',
-                                    confidence: item.metadata?.similarity_score,
-                                    source: `id_${item.metadata?.id}`,
-                                });
+                    const deduplicatedSemanticMemory = [];
+                    const seenFacts = new Set();
+                    if (Array.isArray(profileMemoriesRaw)) {
+                        for (const memory of profileMemoriesRaw) {
+                            if (memory && typeof memory === 'object') {
+                                const tag = memory.tag || 'General';
+                                const featureName = memory.feature_name || 'property';
+                                const value = memory.value || '';
+                                const factKey = `${tag}|${featureName}|${value}`;
+                                if (!seenFacts.has(factKey) && value.trim() !== '') {
+                                    seenFacts.add(factKey);
+                                    profileMemoryFacts.push({
+                                        subject: tag,
+                                        predicate: featureName,
+                                        object: value,
+                                        confidence: memory.metadata?.similarity_score,
+                                        source: `id_${memory.metadata?.id || 'unknown'}`,
+                                    });
+                                    deduplicatedSemanticMemory.push(memory);
+                                }
                             }
                         }
                     }
@@ -824,11 +964,23 @@ class MemMachine {
                         facts: profileMemoryFacts,
                         entities: {},
                     };
-                    const categorized = (0, categorizeMemories_1.categorizeMemories)(episodicMemories, historyCount, shortTermCount);
+                    let categorized;
+                    if (shortTermEpisodesRaw.length > 0 || longTermEpisodesRaw.length > 0) {
+                        const shortTermMemories = episodicMemories.filter(m => shortTermEpisodesRaw.some(raw => raw.uid === m.uuid || raw.id === m.uuid));
+                        const longTermMemories = episodicMemories.filter(m => longTermEpisodesRaw.some(raw => raw.uid === m.uuid || raw.id === m.uuid));
+                        categorized = {
+                            history: [],
+                            shortTermMemory: shortTermMemories,
+                            longTermMemory: longTermMemories,
+                        };
+                    }
+                    else {
+                        categorized = (0, categorizeMemories_1.categorizeMemories)(episodicMemories, historyCount, shortTermCount);
+                    }
                     let context = '';
                     if (enableTemplate) {
                         try {
-                            context = (0, renderTemplate_1.renderTemplate)(contextTemplate, categorized, profileMemory);
+                            context = (0, renderTemplate_1.renderTemplate)(contextTemplate, categorized, profileMemory, deduplicatedSemanticMemory, episodeSummary);
                         }
                         catch (error) {
                             if (this.continueOnFail()) {
@@ -854,19 +1006,21 @@ class MemMachine {
                             profileCount: profileMemory.length,
                             templateEnabled: enableTemplate,
                             contextLength: context.length,
+                            renderedContext: enableTemplate && context.length > 0
+                                ? (context.length > 2000 ? context.substring(0, 2000) + '\n\n...[truncated]' : context)
+                                : '',
                             'http.method': 'POST',
                             'http.url': `${baseURL}/v1/memories/search`,
                             'http.target': '/v1/memories/search',
-                            'request.headers': JSON.stringify({ 'session-id': session.session_id }),
                             'request.body': JSON.stringify(requestOptions.body),
                             'request.body.size': JSON.stringify(requestOptions.body).length,
                             'request.query': query,
                             'request.limit': limit,
                             'http.status_code': 200,
-                            'response.body': responseBody.substring(0, 500),
+                            'response.body': responseBody,
                             'response.body.size': responseBody.length,
-                            'response.episodic_count': Array.isArray(rawEpisodicMemory) ? rawEpisodicMemory.length : 0,
-                            'response.profile_count': Array.isArray(rawProfileMemory) ? rawProfileMemory.length : 0,
+                            'response.episodic_count': episodicMemories.length,
+                            'response.profile_count': profileMemory.facts ? profileMemory.facts.length : 0,
                         },
                     });
                     returnData.push({
@@ -886,13 +1040,27 @@ class MemMachine {
                 }
             }
             catch (error) {
+                tracer.addEvent(operationSpan, 'error', {
+                    'error.type': error.name || 'Error',
+                    'error.message': error.message,
+                    'error.statusCode': error.statusCode || 0,
+                    'error.cause': error.cause ? JSON.stringify(error.cause).substring(0, 500) : '',
+                });
+                tracer.addAttributes(operationSpan, {
+                    'error': true,
+                    'error.type': error.name || 'Error',
+                    'error.message': error.message,
+                    'http.status_code': error.statusCode || 0,
+                });
                 tracer.endSpanWithError(operationSpan, error);
                 if (traceId) {
                     cloudTracer.completeOperation(traceId, {
                         success: false,
                         error: {
                             message: error.message,
-                            type: 'unexpected',
+                            type: error.name || 'Error',
+                            code: error.statusCode?.toString() || error.code || 'UNKNOWN',
+                            statusCode: error.statusCode || 0,
                         },
                     });
                 }
@@ -909,13 +1077,11 @@ class MemMachine {
             }
         }
         if (cloudTracer.isEnabled()) {
-            const traceItems = cloudTracer.getTraceOutput();
-            returnData.push(...traceItems);
             const exportToJaeger = this.getNodeParameter('exportToJaeger', 0, false);
             if (exportToJaeger) {
                 const jaegerEndpoint = this.getNodeParameter('jaegerOtlpEndpoint', 0, 'http://jaeger:4318/v1/traces');
                 cloudTracer.exportTracesToJaeger(jaegerEndpoint).catch((error) => {
-                    console.error('Failed to export traces to Jaeger:', error);
+                    void error;
                 });
             }
         }
@@ -935,6 +1101,14 @@ class MemMachine {
             const mode = this.getNodeParameter('mode', itemIndex);
             if (mode !== 'memory') {
                 throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'Node must be in "AI Agent Memory" mode to connect to AI Agents. Please change the Mode parameter.', { itemIndex });
+            }
+            const orgId = this.getNodeParameter('orgId', itemIndex);
+            const projectId = this.getNodeParameter('projectId', itemIndex);
+            if (!orgId || orgId.trim() === '') {
+                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'MemMachine API v2 requires organization ID for AI Agent memory.', { itemIndex });
+            }
+            if (!projectId || projectId.trim() === '') {
+                throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'MemMachine API v2 requires project ID for AI Agent memory.', { itemIndex });
             }
             sessionId = this.getNodeParameter('sessionId', itemIndex);
             const groupId = this.getNodeParameter('groupId', itemIndex, 'default');
@@ -973,6 +1147,8 @@ class MemMachine {
             const memory = new MemMachineMemory_1.MemMachineMemory({
                 apiUrl,
                 apiKey,
+                orgId: orgId.trim(),
+                projectId: projectId.trim(),
                 groupId,
                 agentId: agentIdArray,
                 userId: userIdArray,

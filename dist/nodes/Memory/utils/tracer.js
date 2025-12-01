@@ -75,10 +75,14 @@ class MemoryTracer {
         }
     }
     async exportTracesToJaeger(endpoint) {
-        if (!this.config.enabled)
+        console.error(`[DEBUG] exportTracesToJaeger called - enabled: ${this.config.enabled}, endpoint: ${endpoint}`);
+        if (!this.config.enabled) {
+            console.error('[DEBUG] Tracing not enabled, skipping export');
             return;
+        }
         try {
             const allTraces = this.collector.getAllTraces();
+            console.error(`[DEBUG] Got ${allTraces.length} traces from collector`);
             const parentTraceIds = new Set();
             for (const trace of allTraces) {
                 if (trace.parentTraceId) {
@@ -90,14 +94,19 @@ class MemoryTracer {
                     return true;
                 return parentTraceIds.has(trace.traceId);
             });
+            console.error(`[DEBUG] Filtered to ${tracesToExport.length} traces for export`);
             if (tracesToExport.length > 0) {
+                console.error(`[DEBUG] Calling exportToJaeger with ${tracesToExport.length} traces`);
                 (0, otlpConverter_1.exportToJaeger)(tracesToExport, endpoint).catch(error => {
                     console.error('MemoryTracer.exportTracesToJaeger failed:', error);
                 });
             }
+            else {
+                console.error('[DEBUG] No traces to export after filtering');
+            }
             const skippedCount = allTraces.length - tracesToExport.length;
             if (skippedCount > 0) {
-                console.warn(`[OTLP Export] Skipped ${skippedCount} orphaned incomplete trace(s)`);
+                console.error(`[OTLP Export] Skipped ${skippedCount} orphaned incomplete trace(s)`);
             }
         }
         catch (error) {
