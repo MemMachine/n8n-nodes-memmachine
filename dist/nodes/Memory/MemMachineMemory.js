@@ -9,6 +9,12 @@ class MemMachineMemory {
     inputKey = 'input';
     outputKey = 'output';
     constructor(config) {
+        if (!config.orgId || config.orgId.trim() === '') {
+            throw new Error('MemMachine API v2 requires organization ID (orgId)');
+        }
+        if (!config.projectId || config.projectId.trim() === '') {
+            throw new Error('MemMachine API v2 requires project ID (projectId)');
+        }
         this.config = {
             ...config,
             contextWindowLength: config.contextWindowLength || 10,
@@ -39,44 +45,42 @@ class MemMachineMemory {
                 contextWindowLength: this.config.contextWindowLength,
             });
             const searchBody = {
-                session: {
-                    group_id: this.config.groupId,
-                    agent_id: this.config.agentId,
-                    user_id: this.config.userId,
-                    session_id: this.config.sessionId,
-                },
+                org_id: this.config.orgId,
+                project_id: this.config.projectId,
                 query: '',
-                limit: this.config.contextWindowLength,
-                filter: {
+                top_k: this.config.contextWindowLength,
+                types: [],
+                filter: JSON.stringify({
                     session_id: this.config.sessionId,
-                    category: 'history',
-                },
+                }),
             };
             const headers = {
                 'Content-Type': 'application/json',
-                'session-id': this.config.sessionId,
                 ...(this.config.apiKey && { Authorization: `Bearer ${this.config.apiKey}` }),
             };
             const searchSpan = this.config.tracer?.startSpan('memmachine.search', {
                 attributes: {
                     'http.method': 'POST',
-                    'http.url': `${this.config.apiUrl}/v1/memories/search`,
+                    'http.url': `${this.config.apiUrl}/api/v2/memories/search`,
                     'memmachine.session.id': this.config.sessionId,
                     'memmachine.session.group_id': this.config.groupId,
-                    'memmachine.query.limit': this.config.contextWindowLength || 10,
+                    'memmachine.query.top_k': this.config.contextWindowLength || 10,
+                    'memmachine.query.types': JSON.stringify(['episodic']),
                 },
             });
             const sanitizedHeaders = { ...headers };
             if (sanitizedHeaders.Authorization) {
                 sanitizedHeaders.Authorization = sanitizedHeaders.Authorization.substring(0, 15) + '***';
             }
-            searchSpan && this.config.tracer?.addEvent(searchSpan, 'memmachine.search.headers', sanitizedHeaders);
-            searchSpan && this.config.tracer?.addEvent(searchSpan, 'memmachine.search.payload', {
-                'payload.session': JSON.stringify(searchBody.session),
+            void (searchSpan && this.config.tracer?.addEvent(searchSpan, 'memmachine.search.headers', sanitizedHeaders));
+            void (searchSpan && this.config.tracer?.addEvent(searchSpan, 'memmachine.search.payload', {
+                'payload.org_id': searchBody.org_id,
+                'payload.project_id': searchBody.project_id,
                 'payload.query': searchBody.query,
-                'payload.limit': searchBody.limit || 10,
-                'payload.filter': JSON.stringify(searchBody.filter),
-            });
+                'payload.top_k': searchBody.top_k || 10,
+                'payload.types': JSON.stringify(searchBody.types),
+                'payload.filter': searchBody.filter,
+            }));
             if (searchSpan && this.config.tracer) {
                 const headerLogKV = {};
                 for (const [key, value] of Object.entries(sanitizedHeaders)) {
@@ -84,8 +88,8 @@ class MemMachineMemory {
                 }
                 this.config.tracer.addEvent(searchSpan, 'request.send', {
                     'http.method': 'POST',
-                    'http.url': `${this.config.apiUrl}/v1/memories/search`,
-                    'http.target': '/v1/memories/search',
+                    'http.url': `${this.config.apiUrl}/api/v2/memories/search`,
+                    'http.target': '/api/v2/memories/search',
                     ...headerLogKV,
                     'body': JSON.stringify(searchBody),
                 });
@@ -96,13 +100,13 @@ class MemMachineMemory {
             if (this.config.cloudTracer && loadTraceId) {
                 apiCallTraceId = this.config.cloudTracer.startOperation('search', {
                     operation: 'api_call_search',
-                    endpoint: '/v1/memories/search',
+                    endpoint: '/api/v2/memories/search',
                     sessionId: this.config.sessionId,
                     'request.body': requestBodyFormatted,
                     'request.body.size': requestBody.length,
                 }, loadTraceId);
             }
-            const response = await fetch(`${this.config.apiUrl}/v1/memories/search`, {
+            const response = await fetch(`${this.config.apiUrl}/api/v2/memories/search`, {
                 method: 'POST',
                 headers,
                 body: requestBody,
@@ -143,12 +147,41 @@ class MemMachineMemory {
                     'body.size': responseBody.length,
                 });
             }
-            const content = data.content || {};
-            const rawEpisodicMemory = content.episodic_memory || [];
-            const rawProfileMemory = content.profile_memory || [];
+            let rawMemories = [];
+            let rawEpisodicMemory = [];
+            let rawProfileMemory = [];
+            let rawSemanticMemory = [];
+            let episodeSummary = [];
+            if (data.memories && Array.isArray(data.memories)) {
+                rawMemories = data.memories;
+                rawEpisodicMemory = rawMemories.filter((m) => m.type === 'episodic');
+                rawProfileMemory = rawMemories.filter((m) => m.type === 'profile');
+            }
+            else if (data.content && typeof data.content === 'object') {
+                const content = data.content;
+                if (content.episodic_memory) {
+                    const episodicMem = content.episodic_memory;
+                    if (episodicMem.short_term_memory?.episodes) {
+                        rawEpisodicMemory.push(...episodicMem.short_term_memory.episodes);
+                    }
+                    if (episodicMem.short_term_memory?.episode_summary && Array.isArray(episodicMem.short_term_memory.episode_summary)) {
+                        episodeSummary = episodicMem.short_term_memory.episode_summary.filter((s) => s && s.trim() !== '');
+                    }
+                    if (episodicMem.long_term_memory?.episodes) {
+                        rawEpisodicMemory.push(...episodicMem.long_term_memory.episodes);
+                    }
+                }
+                if (content.semantic_memory && Array.isArray(content.semantic_memory)) {
+                    rawSemanticMemory = content.semantic_memory;
+                    rawProfileMemory = content.semantic_memory;
+                }
+                rawMemories = [...rawEpisodicMemory, ...rawSemanticMemory];
+            }
             searchSpan && this.config.tracer?.addAttributes(searchSpan, {
-                'memmachine.response.episodic_count': Array.isArray(rawEpisodicMemory) ? rawEpisodicMemory.length : 0,
-                'memmachine.response.profile_count': Array.isArray(rawProfileMemory) ? rawProfileMemory.length : 0,
+                'memmachine.response.total_count': rawMemories.length,
+                'memmachine.response.episodic_count': rawEpisodicMemory.length,
+                'memmachine.response.semantic_count': rawSemanticMemory.length,
+                'memmachine.response.profile_count': rawProfileMemory.length,
             });
             let processingTraceId = '';
             if (this.config.cloudTracer && loadTraceId) {
@@ -160,13 +193,15 @@ class MemMachineMemory {
                 }, loadTraceId);
             }
             if (this.config.enableTemplate && this.config.contextTemplate) {
-                const result = this.formatTemplatedMemory(rawEpisodicMemory, rawProfileMemory);
+                const result = this.formatTemplatedMemory(rawEpisodicMemory, rawProfileMemory, rawSemanticMemory, episodeSummary);
+                const renderedContent = result.chat_history?.[0]?.content || '';
                 if (processingTraceId && this.config.cloudTracer) {
                     this.config.cloudTracer.completeOperation(processingTraceId, {
                         success: true,
                         metadata: {
                             operation: 'format_template',
-                            outputLength: result.chat_history?.[0]?.content?.length || 0,
+                            outputLength: renderedContent.length,
+                            renderedContext: renderedContent.length > 2000 ? renderedContent.substring(0, 2000) + '\n\n...[truncated]' : renderedContent,
                         },
                     });
                 }
@@ -174,25 +209,24 @@ class MemMachineMemory {
             }
             const messages = [];
             if (Array.isArray(rawEpisodicMemory)) {
-                for (const group of rawEpisodicMemory) {
-                    if (Array.isArray(group)) {
-                        for (const item of group) {
-                            if (item && item.content && item.content.trim() !== '') {
-                                const isUserMessage = this.config.userId.includes(item.producer_id);
-                                if (isUserMessage) {
-                                    messages.push({
-                                        type: 'human',
-                                        content: item.content,
-                                        additional_kwargs: {},
-                                    });
-                                }
-                                else {
-                                    messages.push({
-                                        type: 'ai',
-                                        content: item.content,
-                                        additional_kwargs: {},
-                                    });
-                                }
+                for (const memory of rawEpisodicMemory) {
+                    if (memory && Array.isArray(memory.messages) && memory.messages.length > 0) {
+                        const message = memory.messages[0];
+                        if (message.content && message.content.trim() !== '') {
+                            const isUserMessage = this.config.userId.some((uid) => message.producer && message.producer.includes(uid));
+                            if (isUserMessage) {
+                                messages.push({
+                                    type: 'human',
+                                    content: message.content,
+                                    additional_kwargs: {},
+                                });
+                            }
+                            else {
+                                messages.push({
+                                    type: 'ai',
+                                    content: message.content,
+                                    additional_kwargs: {},
+                                });
                             }
                         }
                     }
@@ -332,36 +366,37 @@ class MemMachineMemory {
     }
     async storeMessage(content, producer, producedFor, parentTraceId = '', messageType = 'message') {
         const storeBody = {
-            session: {
-                group_id: this.config.groupId,
-                agent_id: this.config.agentId,
-                user_id: this.config.userId,
-                session_id: this.config.sessionId,
-            },
-            producer,
-            produced_for: producedFor,
-            episode_content: content,
-            episode_type: 'dialog',
-            metadata: {
-                category: 'history',
-                timestamp: new Date().toISOString(),
-            },
+            org_id: this.config.orgId,
+            project_id: this.config.projectId,
+            messages: [
+                {
+                    content,
+                    producer,
+                    produced_for: producedFor,
+                    role: producer.includes('agent') ? 'assistant' : 'user',
+                    metadata: {
+                        agent_id: this.config.agentId,
+                        user_id: this.config.userId,
+                        category: 'history',
+                        timestamp: new Date().toISOString(),
+                    },
+                },
+            ],
         };
         const headers = {
             'Content-Type': 'application/json',
-            'session-id': this.config.sessionId,
             ...(this.config.apiKey && { Authorization: `Bearer ${this.config.apiKey}` }),
         };
         const storeSpan = this.config.tracer?.startSpan('memmachine.store', {
             attributes: {
                 'http.method': 'POST',
-                'http.url': `${this.config.apiUrl}/v1/memories`,
+                'http.url': `${this.config.apiUrl}/api/v2/memories`,
                 'memmachine.session.id': this.config.sessionId,
-                'memmachine.session.group_id': this.config.groupId,
+                'memmachine.org_id': this.config.orgId,
+                'memmachine.project_id': this.config.projectId,
                 'memmachine.message.producer': producer,
                 'memmachine.message.produced_for': producedFor,
                 'memmachine.message.length': content.length,
-                'memmachine.episode.type': 'dialog',
             },
         });
         const sanitizedHeaders = { ...headers };
@@ -370,12 +405,13 @@ class MemMachineMemory {
         }
         storeSpan && this.config.tracer?.addEvent(storeSpan, 'memmachine.store.headers', sanitizedHeaders);
         storeSpan && this.config.tracer?.addEvent(storeSpan, 'memmachine.store.payload', {
-            'payload.session': JSON.stringify(storeBody.session),
-            'payload.producer': producer,
-            'payload.produced_for': producedFor,
-            'payload.episode_content': content.length > 200 ? content.substring(0, 200) + '...' : content,
-            'payload.episode_type': storeBody.episode_type,
-            'payload.metadata': JSON.stringify(storeBody.metadata),
+            'payload.org_id': this.config.orgId,
+            'payload.project_id': this.config.projectId,
+            'payload.messages[0].producer': producer,
+            'payload.messages[0].produced_for': producedFor,
+            'payload.messages[0].content': content.length > 200 ? content.substring(0, 200) + '...' : content,
+            'payload.messages[0].role': storeBody.messages[0].role,
+            'payload.messages[0].metadata': JSON.stringify(storeBody.messages[0].metadata),
         });
         if (storeSpan && this.config.tracer) {
             const headerLogKV = {};
@@ -384,8 +420,8 @@ class MemMachineMemory {
             }
             this.config.tracer.addEvent(storeSpan, 'request.send', {
                 'http.method': 'POST',
-                'http.url': `${this.config.apiUrl}/v1/memories`,
-                'http.target': '/v1/memories',
+                'http.url': `${this.config.apiUrl}/api/v2/memories`,
+                'http.target': '/api/v2/memories',
                 ...headerLogKV,
                 'body': JSON.stringify(storeBody),
             });
@@ -396,18 +432,47 @@ class MemMachineMemory {
         if (this.config.cloudTracer && parentTraceId) {
             apiStoreTraceId = this.config.cloudTracer.startOperation('store', {
                 operation: `api_call_store_${messageType}`,
-                endpoint: '/v1/memories',
+                endpoint: '/api/v2/memories',
                 producer,
                 messageLength: content.length,
                 'request.body': storeRequestBodyFormatted.length > 500 ? storeRequestBodyFormatted.substring(0, 500) + '...[truncated]' : storeRequestBodyFormatted,
                 'request.body.size': storeRequestBody.length,
             }, parentTraceId);
         }
-        const response = await fetch(`${this.config.apiUrl}/v1/memories`, {
+        let response = await fetch(`${this.config.apiUrl}/api/v2/memories`, {
             method: 'POST',
             headers,
             body: storeRequestBody,
         });
+        if (!response.ok && response.status === 404) {
+            const errorText = await response.clone().text();
+            if (errorText.toLowerCase().includes('project')) {
+                const createProjectResponse = await fetch(`${this.config.apiUrl}/api/v2/projects`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({
+                        org_id: this.config.orgId,
+                        project_id: this.config.projectId,
+                        description: 'Auto-created by n8n workflow',
+                        config: {
+                            reranker: 'default',
+                            embedder: 'default',
+                        },
+                    }),
+                });
+                if (createProjectResponse.ok || createProjectResponse.status === 409) {
+                    response = await fetch(`${this.config.apiUrl}/api/v2/memories`, {
+                        method: 'POST',
+                        headers,
+                        body: storeRequestBody,
+                    });
+                }
+                else {
+                    const createErrorText = await createProjectResponse.text();
+                    throw new Error(`Failed to auto-create project: ${createProjectResponse.status} ${createErrorText}`);
+                }
+            }
+        }
         const responseText = await response.clone().text();
         let formattedResponse = responseText;
         try {
@@ -452,45 +517,65 @@ class MemMachineMemory {
         }
         storeSpan && this.config.tracer?.endSpan(storeSpan);
     }
-    formatTemplatedMemory(rawEpisodicMemory, rawProfileMemory) {
+    formatTemplatedMemory(rawEpisodicMemory, rawProfileMemory, rawSemanticMemory, episodeSummary) {
         console.log('[MemMachineMemory] Formatting templated memory', {
             episodicCount: rawEpisodicMemory.length,
             profileCount: rawProfileMemory.length,
+            semanticCount: rawSemanticMemory.length,
+            summaryCount: episodeSummary.length,
         });
         const flattenedMemories = [];
+        const seenEpisodes = new Set();
         if (Array.isArray(rawEpisodicMemory)) {
             for (const group of rawEpisodicMemory) {
                 if (Array.isArray(group)) {
                     for (const item of group) {
                         if (item && typeof item === 'object' && item.content && item.content.trim() !== '') {
-                            flattenedMemories.push({
-                                episode_content: item.content,
-                                producer: item.producer_id || 'unknown',
-                                produced_for: item.produced_for_id || 'unknown',
-                                episode_type: item.episode_type || 'dialog',
-                                timestamp: item.timestamp,
-                                uuid: item.uuid,
-                                content_type: item.content_type,
-                                group_id: item.group_id,
-                                session_id: item.session_id,
-                                user_metadata: item.user_metadata,
-                            });
+                            const content = item.content;
+                            const producer = item.producer_id || 'unknown';
+                            const producedFor = item.produced_for_id || 'unknown';
+                            const episodeKey = `${content}|${producer}|${producedFor}`;
+                            if (!seenEpisodes.has(episodeKey)) {
+                                seenEpisodes.add(episodeKey);
+                                flattenedMemories.push({
+                                    episode_content: content,
+                                    producer,
+                                    produced_for: producedFor,
+                                    episode_type: item.episode_type || 'dialog',
+                                    timestamp: item.timestamp,
+                                    uuid: item.uuid,
+                                    content_type: item.content_type,
+                                    group_id: item.group_id,
+                                    session_id: item.session_id,
+                                    user_metadata: item.user_metadata,
+                                });
+                            }
                         }
                     }
                 }
             }
         }
         const profileMemoryFacts = [];
+        const deduplicatedSemanticMemory = [];
+        const seenFacts = new Set();
         if (Array.isArray(rawProfileMemory)) {
             for (const item of rawProfileMemory) {
                 if (item && typeof item === 'object') {
-                    profileMemoryFacts.push({
-                        subject: item.tag || 'General',
-                        predicate: item.feature || 'property',
-                        object: item.value || '',
-                        confidence: item.metadata?.similarity_score,
-                        source: `id_${item.metadata?.id}`,
-                    });
+                    const tag = item.tag || 'General';
+                    const feature = item.feature || 'property';
+                    const value = item.value || '';
+                    const factKey = `${tag}|${feature}|${value}`;
+                    if (!seenFacts.has(factKey) && value.trim() !== '') {
+                        seenFacts.add(factKey);
+                        profileMemoryFacts.push({
+                            subject: tag,
+                            predicate: feature,
+                            object: value,
+                            confidence: item.metadata?.similarity_score,
+                            source: `id_${item.metadata?.id}`,
+                        });
+                        deduplicatedSemanticMemory.push(item);
+                    }
                 }
             }
         }
@@ -501,8 +586,9 @@ class MemMachineMemory {
         const historyCount = this.config.historyCount || 5;
         const shortTermCount = this.config.shortTermCount || 10;
         const categorized = (0, categorizeMemories_1.categorizeMemories)(flattenedMemories, historyCount, shortTermCount);
-        const contextText = (0, renderTemplate_1.renderTemplate)(this.config.contextTemplate, categorized, profileMemory);
+        const contextText = (0, renderTemplate_1.renderTemplate)(this.config.contextTemplate, categorized, profileMemory, deduplicatedSemanticMemory, episodeSummary);
         console.log('[MemMachineMemory] Templated context length:', contextText.length);
+        console.log('[MemMachineMemory] Rendered context preview:', contextText.substring(0, 500));
         return {
             chat_history: [
                 {

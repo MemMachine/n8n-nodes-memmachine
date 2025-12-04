@@ -144,7 +144,7 @@ Then use `http://localhost:8080` as the MemMachine endpoint.
 
 ### Cannot connect to MemMachine
 
-1. Check MemMachine is running: `curl http://localhost:8080/health`
+1. Check MemMachine is running: `curl http://localhost:8080/api/v2/health`
 2. Check network connectivity: `docker exec -it n8n-memory-test ping memmachine`
 3. Verify credentials configuration in n8n UI
 

@@ -12,22 +12,39 @@ export interface ProfileMemoryFacts extends IDataObject {
   entities?: Record<string, string>;
 }
 
+export interface SemanticMemoryFeature extends IDataObject {
+  set_id: string;
+  category: string;
+  tag: string;
+  feature_name: string;
+  value: string;
+  metadata?: {
+    citations?: any;
+    id?: string;
+    other?: any;
+  };
+}
+
 /**
  * Renders a markdown template by replacing placeholders with formatted memory sections
  * 
- * @param template - Template string with placeholders: {{history}}, {{shortTermMemory}}, {{longTermMemory}}, {{profileMemory}}
+ * @param template - Template string with placeholders: {{history}}, {{shortTermMemory}}, {{longTermMemory}}, {{profileMemory}}, {{semanticMemory}}, {{episodeSummary}}
  * @param categorized - Categorized memory structure from categorizeMemories()
  * @param profileMemory - Profile memory facts from MemMachine API
+ * @param semanticMemory - Semantic memory features from MemMachine API
+ * @param episodeSummary - Episode summaries from short-term memory
  * @returns Rendered markdown string with placeholders replaced
  * 
  * @example
  * const template = "## History\n{{history}}\n\n## Profile\n{{profileMemory}}";
- * const context = renderTemplate(template, categorized, profileFacts);
+ * const context = renderTemplate(template, categorized, profileFacts, semanticFeatures, summaries);
  */
 export function renderTemplate(
   template: string,
   categorized: CategorizedMemories,
   profileMemory: ProfileMemoryFacts,
+  semanticMemory: SemanticMemoryFeature[] = [],
+  episodeSummary: string[] = [],
 ): string {
   let rendered = template;
 
@@ -36,6 +53,8 @@ export function renderTemplate(
   rendered = rendered.replace(/\{\{shortTermMemory\}\}/g, formatAsMarkdownList(categorized.shortTermMemory));
   rendered = rendered.replace(/\{\{longTermMemory\}\}/g, formatAsMarkdownList(categorized.longTermMemory));
   rendered = rendered.replace(/\{\{profileMemory\}\}/g, formatProfileMemory(profileMemory));
+  rendered = rendered.replace(/\{\{semanticMemory\}\}/g, formatSemanticMemory(semanticMemory));
+  rendered = rendered.replace(/\{\{episodeSummary\}\}/g, formatEpisodeSummary(episodeSummary));
 
   return rendered;
 }
@@ -104,4 +123,46 @@ export function formatProfileMemory(profileMemory: ProfileMemoryFacts): string {
   });
 
   return sections.join('\n\n');
+}
+
+/**
+ * Formats semantic memory features as markdown list grouped by tag/category
+ * 
+ * @param semanticMemory - Array of semantic memory features
+ * @returns Markdown formatted string with feature listings
+ * 
+ * @example
+ * formatSemanticMemory([{ tag: "Demographic", feature_name: "name", value: "Alice" }])
+ * // Returns: "- **Demographic** / name: Alice"
+ */
+export function formatSemanticMemory(semanticMemory: SemanticMemoryFeature[]): string {
+  if (semanticMemory.length === 0) {
+    return '*No semantic features available*';
+  }
+
+  return semanticMemory
+    .map((feature) => {
+      const tag = feature.tag || 'General';
+      const featureName = feature.feature_name || 'property';
+      const value = feature.value || '';
+      return `- **${tag}** / ${featureName}: ${value}`;
+    })
+    .join('\n');
+}
+
+/**
+ * Formats episode summaries as markdown
+ * 
+ * @param episodeSummary - Array of summary strings
+ * @returns Markdown formatted string with summaries
+ */
+export function formatEpisodeSummary(episodeSummary: string[]): string {
+  if (episodeSummary.length === 0) {
+    return '';
+  }
+
+  return episodeSummary
+    .filter((summary) => summary && summary.trim() !== '')
+    .map((summary) => `> ${summary}`)
+    .join('\n\n');
 }

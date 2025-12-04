@@ -9,7 +9,7 @@ import type {
   SupplyData,
 } from 'n8n-workflow';
 import { NodeOperationError } from 'n8n-workflow';
-import { categorizeMemories, type EpisodicMemoryItem } from './utils/categorizeMemories';
+import { categorizeMemories, type EpisodicMemoryItem, type CategorizedMemories } from './utils/categorizeMemories';
 import { renderTemplate, type ProfileMemoryFacts } from './utils/renderTemplate';
 import { MemMachineMemory } from './MemMachineMemory';
 import { MemoryTracer } from './utils/tracer';
@@ -83,7 +83,7 @@ export class MemMachine implements INodeType {
             routing: {
               request: {
                 method: 'POST',
-                url: '/v1/memories',
+                url: '/api/v2/memories',
               },
             },
           },
@@ -95,7 +95,7 @@ export class MemMachine implements INodeType {
             routing: {
               request: {
                 method: 'POST',
-                url: '/v1/memories/search',
+                url: '/api/v2/memories/search',
               },
             },
           },
@@ -144,21 +144,22 @@ export class MemMachine implements INodeType {
             enableMemoryTemplate: [true],
           },
         },
-        default: `# Conversation Context
+        default: `# Memory Context
 
-## Recent History
-{{history}}
+**Instructions**: Use semantic memory as ground truth about the user. Enrich your understanding with short-term memory for recent context and long-term memory for historical patterns.
 
-## Short-Term Memory
+## User Profile (Semantic Memory)
+{{semanticMemory}}
+
+## Recent Context (Short-Term Memory)
 {{shortTermMemory}}
 
-## Long-Term Memory
-{{longTermMemory}}
+{{episodeSummary}}
 
-## User Profile
-{{profileMemory}}`,
-        description: 'Template for formatting memory context. Available placeholders: {{history}}, {{shortTermMemory}}, {{longTermMemory}}, {{profileMemory}}',
-        hint: 'The formatted context will be provided to the AI as a single system message',
+## Historical Context (Long-Term Memory)
+{{longTermMemory}}`,
+        description: 'Template for formatting memory context with semantic features, short-term, and long-term episodes',
+        hint: 'Semantic memory provides verified facts, short-term provides recent context, long-term provides historical patterns',
       },
       {
         displayName: 'Template Options',
@@ -197,17 +198,28 @@ export class MemMachine implements INodeType {
           },
         ],
       },
-      // Session Context Parameters (shared across modes)
+      // V2 API Parameters - Organization and Project
       {
-        displayName: 'Session ID',
-        name: 'sessionId',
+        displayName: 'Organization ID',
+        name: 'orgId',
+        type: 'string',
+        default: 'group_v1',
+        required: true,
+        placeholder: 'group_v1',
+        description: 'Organization identifier for MemMachine API v2. All projects belong to an organization.',
+        hint: 'Required for v2 API - defines the top-level tenant for memory storage',
+      },
+      {
+        displayName: 'Project ID',
+        name: 'projectId',
         type: 'string',
         default: '={{$json.sessionId}}',
         required: true,
         placeholder: '={{$json.sessionId}}',
-        description: 'Conversation session identifier for isolation. Typically provided by Chat Trigger.',
-        hint: 'For memory mode: Isolates conversation history by session. For manual mode: Used for filtering.',
+        description: 'Project identifier for memory isolation. Projects are automatically created if they don\'t exist.',
+        hint: 'Required for v2 API - all memories are stored within a project. Auto-created on first use with default configuration.',
       },
+      // Session Context Parameters (shared across modes)
       {
         displayName: 'Group ID',
         name: 'groupId',
@@ -230,9 +242,9 @@ export class MemMachine implements INodeType {
         displayName: 'User ID',
         name: 'userId',
         type: 'string',
-        default: '={{$json.userId}}',
+        default: 'user_v1',
         required: true,
-        placeholder: 'user_456',
+        placeholder: 'user_v1',
         description: 'User identifier (can be comma-separated for multiple users)',
       },
       // Store Operation Parameters
@@ -246,7 +258,7 @@ export class MemMachine implements INodeType {
             operation: ['store'],
           },
         },
-        default: '',
+        default: '={{$parameter.userId}}',
         required: true,
         placeholder: 'user_456 or agent_assistant',
         description: 'Who created this message (user_id or agent_id)',
@@ -261,7 +273,7 @@ export class MemMachine implements INodeType {
             operation: ['store'],
           },
         },
-        default: '',
+        default: '={{$parameter.agentId}}',
         required: true,
         placeholder: 'agent_assistant or user_456',
         description: 'Who this message is intended for (user_id or agent_id)',
@@ -279,7 +291,7 @@ export class MemMachine implements INodeType {
         typeOptions: {
           rows: 4,
         },
-        default: '={{$json.content}}',
+        default: '={{$json.chatInput}}',
         required: true,
         description: 'The message text to store',
       },
@@ -334,7 +346,7 @@ export class MemMachine implements INodeType {
             operation: ['enrich'],
           },
         },
-        default: '={{$json.content}}',
+        default: '={{$json.chatInput}}',
         required: true,
         description: 'Natural language query to search for relevant memories',
       },
@@ -409,21 +421,22 @@ export class MemMachine implements INodeType {
             enableTemplate: [true],
           },
         },
-        default: `# Conversation Context
+        default: `# Memory Context
 
-## Recent History
-{{history}}
+**Instructions**: Use semantic memory as ground truth about the user. Enrich your understanding with short-term memory for recent context and long-term memory for historical patterns.
 
-## Short-Term Memory
+## User Profile (Semantic Memory)
+{{semanticMemory}}
+
+## Recent Context (Short-Term Memory)
 {{shortTermMemory}}
 
-## Long-Term Memory
-{{longTermMemory}}
+{{episodeSummary}}
 
-## Profile Information
-{{profileMemory}}`,
-        description: 'Markdown template for formatting context. Supported placeholders: {{history}}, {{shortTermMemory}}, {{longTermMemory}}, {{profileMemory}}',
-        hint: 'Use {{history}}, {{shortTermMemory}}, {{longTermMemory}}, and {{profileMemory}} as placeholders in your template',
+## Historical Context (Long-Term Memory)
+{{longTermMemory}}`,
+        description: 'Markdown template for formatting memory context with semantic features, short-term, and long-term episodes',
+        hint: 'Semantic memory provides verified facts, short-term provides recent context, long-term provides historical patterns',
       },
       {
         displayName: 'Advanced Options',
@@ -586,12 +599,32 @@ export class MemMachine implements INodeType {
       let traceId = ''; // Cloud trace ID for this operation
       
       try {
+        // T009: Get and validate v2 API parameters (org_id, project_id)
+        const orgId = this.getNodeParameter('orgId', i) as string;
+        const projectId = this.getNodeParameter('projectId', i) as string;
+
+        // T009: Validate required v2 API fields (FR-012)
+        if (!orgId || orgId.trim() === '') {
+          throw new NodeOperationError(
+            this.getNode(),
+            'MemMachine API v2 requires organization ID. Please provide a valid organization identifier.',
+            { itemIndex: i }
+          );
+        }
+        if (!projectId || projectId.trim() === '') {
+          throw new NodeOperationError(
+            this.getNode(),
+            'MemMachine API v2 requires project ID. Please provide a valid project identifier. Projects are automatically created if they don\'t exist.',
+            { itemIndex: i }
+          );
+        }
+
         // Build session context
         const session = {
           group_id: this.getNodeParameter('groupId', i) as string,
           agent_id: (this.getNodeParameter('agentId', i) as string).split(',').map((id) => id.trim()),
           user_id: (this.getNodeParameter('userId', i) as string).split(',').map((id) => id.trim()),
-          session_id: this.getNodeParameter('sessionId', i) as string,
+          session_id: projectId, // Use projectId as session identifier
         };
 
         if (operation === 'store') {
@@ -635,38 +668,46 @@ export class MemMachine implements INodeType {
           const credentials = await this.getCredentials('memMachineApi');
           const baseURL = credentials.apiEndpoint as string;
 
+          // T013-T016: Transform request body to v2 format (messages array with producer/produced_for)
           const requestOptions: IHttpRequestOptions = {
             method: 'POST',
             baseURL,
-            url: '/v1/memories',
+            url: '/api/v2/memories',
             headers: {
               'session-id': session.session_id,
             },
             body: {
-              session,
-              producer,
-              produced_for: producedFor,
-              episode_content: episodeContent,
-              episode_type: episodeType,
-              metadata,
+              org_id: orgId.trim(),
+              project_id: projectId.trim(),
+              messages: [
+                {
+                  content: episodeContent,
+                  producer,
+                  produced_for: producedFor,
+                  role: producer.includes('agent') ? 'assistant' : 'user',
+                  metadata: {
+                    ...metadata,
+                    agent_id: Array.isArray(session.agent_id) ? session.agent_id[0] : session.agent_id,
+                    user_id: Array.isArray(session.user_id) ? session.user_id[0] : session.user_id,
+                  },
+                },
+              ],
             },
             json: true,
             timeout: 30000, // 30 second timeout
           };
 
-          // Debug: Log request to verify session_id
-          console.log('MemMachine Store - Session object:', JSON.stringify(session, null, 2));
-          console.log('MemMachine Store - Headers:', requestOptions.headers);
+          // Debug: Request verification (v2 format with org_id/project_id and messages array)
 
-          // Add tracing events for request details
+          // T017: Add tracing events for v2 request details
           tracer.addEvent(operationSpan, 'memmachine.store.request.headers', {
-            'session-id': session.session_id,
             'Content-Type': 'application/json',
           });
           
           tracer.addEvent(operationSpan, 'memmachine.store.request.payload', {
-            'payload.session': JSON.stringify(session),
-            'payload.producer': producer,
+            'payload.org_id': orgId,
+            'payload.project_id': projectId,
+            'payload.messages[0].producer': producer,
             'payload.produced_for': producedFor,
             'payload.episode_content': episodeContent.length > 200 ? episodeContent.substring(0, 200) + '...' : episodeContent,
             'payload.episode_type': episodeType,
@@ -682,17 +723,101 @@ export class MemMachine implements INodeType {
           
           tracer.addEvent(operationSpan, 'request.send', {
             'http.method': 'POST',
-            'http.url': `${baseURL}/v1/memories`,
-            'http.target': '/v1/memories',
+            'http.url': `${baseURL}/api/v2/memories`,
+            'http.target': '/api/v2/memories',
             ...headerLogKV,
             'body': JSON.stringify(requestOptions.body),
           });
 
-          const response = await this.helpers.httpRequestWithAuthentication.call(
-            this,
-            'memMachineApi',
-            requestOptions
-          );
+          // T040-T047: Implement auto-creation with 404 detection and retry
+          let response: any;
+          try {
+            response = await this.helpers.httpRequestWithAuthentication.call(
+              this,
+              'memMachineApi',
+              requestOptions
+            );
+          } catch (error: any) {
+            // Log detailed error for debugging 422 validation errors
+            const errorDetails = {
+              statusCode: error.statusCode,
+              message: error.message,
+              body: error.response?.body || error.cause?.response?.body,
+              requestBody: requestOptions.body,
+            };
+            throw new NodeOperationError(
+              this.getNode(),
+              `MemMachine API error (${error.statusCode}): ${JSON.stringify(errorDetails, null, 2)}`,
+              { itemIndex: i }
+            );
+            
+            // T041: Check if error is 404 (project not found)
+            if (error.statusCode === 404 && error.message && error.message.toLowerCase().includes('project')) {
+              // Project not found, will auto-create and retry
+              
+              // T042-T045: Create project with default configuration
+              const createProjectOptions: IHttpRequestOptions = {
+                method: 'POST',
+                baseURL,
+                url: '/api/v2/projects',
+                body: {
+                  org_id: orgId.trim(),
+                  project_id: projectId.trim(),
+                  description: 'Auto-created by n8n workflow',
+                  config: {
+                    reranker: 'default',
+                    embedder: 'default',
+                  },
+                },
+                json: true,
+                timeout: 30000,
+              };
+
+              try {
+                // T052: Add tracing for project creation
+                cloudTracer.addEvent(traceId, 'project.auto_create', {
+                  org_id: orgId,
+                  project_id: projectId,
+                  description: 'Auto-created by n8n workflow',
+                });
+
+                await this.helpers.httpRequestWithAuthentication.call(
+                  this,
+                  'memMachineApi',
+                  createProjectOptions
+                );
+
+                // Project created successfully, continuing with retry
+                
+                // T046: Retry original store operation after project creation
+                response = await this.helpers.httpRequestWithAuthentication.call(
+                  this,
+                  'memMachineApi',
+                  requestOptions
+                );
+              } catch (createError: any) {
+                // T045: Treat 409 Conflict as success (project already exists - race condition)
+                if (createError.statusCode === 409) {
+                  // Project already exists (race condition detected), retrying store operation
+                  response = await this.helpers.httpRequestWithAuthentication.call(
+                    this,
+                    'memMachineApi',
+                    requestOptions
+                  );
+                } else {
+                  // T047: Throw clear error for other project creation failures
+                  throw new NodeOperationError(
+                    this.getNode(),
+                    `Failed to auto-create project '${projectId}' in organization '${orgId}': ${createError.message}`,
+                    { itemIndex: i }
+                  );
+                }
+              }
+            } else {
+              // Not a 404 or not project-related, re-throw original error
+              throw error;
+            }
+          }
 
           // Add response received event with structured KV logs
           const responseBody = JSON.stringify(response || { success: true });
@@ -725,12 +850,11 @@ export class MemMachine implements INodeType {
               'http.method': 'POST',
               'http.url': `${baseURL}/v1/memories`,
               'http.target': '/v1/memories',
-              'request.headers': JSON.stringify({ 'session-id': session.session_id }),
               'request.body': JSON.stringify(requestOptions.body),
               'request.body.size': JSON.stringify(requestOptions.body).length,
               // API Response details
               'http.status_code': 200,
-              'response.body': responseBody.substring(0, 500), // Truncate to avoid huge metadata
+              'response.body': responseBody,
               'response.body.size': responseBody.length,
             },
           });
@@ -799,33 +923,39 @@ export class MemMachine implements INodeType {
           const credentials = await this.getCredentials('memMachineApi');
           const baseURL = credentials.apiEndpoint as string;
 
+          // T020-T022: Transform search request to v2 format (org_id/project_id, types array, filter)
+          const searchBody: any = {
+            org_id: orgId.trim(),
+            project_id: projectId.trim(),
+            query: query || '', // Required field, use empty string if not provided
+            types: [], // Empty array to get all memory types (episodic + semantic)
+            top_k: limit,
+            filter: '', // Currently unused by v2 API, always empty string
+          };
+          
           const requestOptions: IHttpRequestOptions = {
             method: 'POST',
             baseURL,
-            url: '/v1/memories/search',
+            url: '/api/v2/memories/search',
             headers: {
               'session-id': session.session_id,
             },
-            body: {
-              session,
-              query,
-              limit,
-              ...(Object.keys(filter).length > 0 && { filter }),
-            },
+            body: searchBody,
             json: true,
             timeout: 30000, // 30 second timeout
           };
 
-          // Add tracing events for request details
+          // T025: Add tracing events for v2 request details
           tracer.addEvent(operationSpan, 'memmachine.search.request.headers', {
-            'session-id': session.session_id,
             'Content-Type': 'application/json',
           });
           
           tracer.addEvent(operationSpan, 'memmachine.search.request.payload', {
-            'payload.session': JSON.stringify(session),
+            'payload.org_id': orgId,
+            'payload.project_id': projectId,
             'payload.query': query,
-            'payload.limit': limit,
+            'payload.top_k': limit,
+            'payload.types': JSON.stringify(['episodic']),
             'payload.filter': Object.keys(filter).length > 0 ? JSON.stringify(filter) : '{}',
           });
 
@@ -838,8 +968,8 @@ export class MemMachine implements INodeType {
           
           tracer.addEvent(operationSpan, 'request.send', {
             'http.method': 'POST',
-            'http.url': `${baseURL}/v1/memories/search`,
-            'http.target': '/v1/memories/search',
+            'http.url': `${baseURL}/api/v2/memories/search`,
+            'http.target': '/api/v2/memories/search',
             ...headerLogKV,
             'body': JSON.stringify(requestOptions.body),
           });
@@ -850,16 +980,65 @@ export class MemMachine implements INodeType {
             requestOptions
           );
 
-          // Extract memories from response and include full API response
+          // T023: Extract memories from v2 response (handle both formats)
           const responseData = response as IDataObject;
-          const content = (responseData.content as IDataObject) || {};
-          const rawEpisodicMemory = content.episodic_memory || [];
-          const rawProfileMemory = content.profile_memory || [];
+          let rawMemories: any[] = [];
+          let episodicMemoriesRaw: any[] = [];
+          let profileMemoriesRaw: any[] = [];
+          let shortTermEpisodesRaw: any[] = [];
+          let longTermEpisodesRaw: any[] = [];
+          
+          // Check if response has flat memories array (documented v2 format)
+          if (responseData.memories && Array.isArray(responseData.memories)) {
+            rawMemories = responseData.memories;
+            episodicMemoriesRaw = rawMemories.filter((m: any) => m.type === 'episodic');
+            profileMemoriesRaw = rawMemories.filter((m: any) => m.type === 'profile');
+          }
+          // Check if response has nested content structure (actual API response)
+          else if (responseData.content && typeof responseData.content === 'object') {
+            const content = responseData.content as any;
+            
+            // Extract episodic memories from nested structure
+            if (content.episodic_memory) {
+              const episodicMem = content.episodic_memory;
+              
+              // Collect episodes from short_term_memory (keep separate)
+              if (episodicMem.short_term_memory?.episodes) {
+                shortTermEpisodesRaw = episodicMem.short_term_memory.episodes;
+                episodicMemoriesRaw.push(...shortTermEpisodesRaw);
+              }
+              
+              // Collect episodes from long_term_memory (keep separate)
+              if (episodicMem.long_term_memory?.episodes) {
+                longTermEpisodesRaw = episodicMem.long_term_memory.episodes;
+                episodicMemoriesRaw.push(...longTermEpisodesRaw);
+              }
+            }
+            
+            // Extract semantic/profile memories
+            if (content.semantic_memory && Array.isArray(content.semantic_memory)) {
+              profileMemoriesRaw = content.semantic_memory;
+            }
+            
+            rawMemories = [...episodicMemoriesRaw, ...profileMemoriesRaw];
+          }
+          
+          // Extract episode summary from short-term memory
+          let episodeSummary: string[] = [];
+          if (responseData.content && typeof responseData.content === 'object') {
+            const content = responseData.content as any;
+            if (content.episodic_memory?.short_term_memory?.episode_summary && 
+                Array.isArray(content.episodic_memory.short_term_memory.episode_summary)) {
+              episodeSummary = content.episodic_memory.short_term_memory.episode_summary
+                .filter((s: string) => s && s.trim() !== '');
+            }
+          }
           
           // Add response metrics to span
           tracer.addAttributes(operationSpan, {
-            'memmachine.response.episodic_count': Array.isArray(rawEpisodicMemory) ? rawEpisodicMemory.length : 0,
-            'memmachine.response.profile_count': Array.isArray(rawProfileMemory) ? rawProfileMemory.length : 0,
+            'memmachine.response.total_count': rawMemories.length,
+            'memmachine.response.episodic_count': episodicMemoriesRaw.length,
+            'memmachine.response.profile_count': profileMemoriesRaw.length,
           });
 
           // Add response received event with structured KV logs
@@ -871,56 +1050,96 @@ export class MemMachine implements INodeType {
             'body.size': responseBody.length,
           });
           
-          // Flatten nested arrays and transform to expected structure
-          // MemMachine API returns array of arrays, we need to flatten it
+          // T023: Transform memories to internal structure (handle both formats)
           const flattenedMemories: any[] = [];
-          if (Array.isArray(rawEpisodicMemory)) {
-            for (const group of rawEpisodicMemory) {
-              if (Array.isArray(group)) {
-                // Filter out empty content items and map field names
-                for (const item of group) {
-                  if (item && typeof item === 'object' && item.content && item.content.trim() !== '') {
+          const seenEpisodes = new Set<string>(); // Track seen episodes to avoid duplicates
+          
+          if (Array.isArray(episodicMemoriesRaw)) {
+            for (const memory of episodicMemoriesRaw) {
+              if (memory && typeof memory === 'object') {
+                let content = '';
+                let producer = 'unknown';
+                let producedFor = 'unknown';
+                let episodeType = 'dialog';
+                let timestamp = memory.created_at || new Date().toISOString();
+                let uuid = memory.id || memory.uid || '';
+                let metadata = {};
+                
+                // Handle flat v2 format (with messages array)
+                if (Array.isArray(memory.messages) && memory.messages.length > 0) {
+                  content = memory.messages[0].content || '';
+                  producer = memory.messages[0].producer || 'unknown';
+                  producedFor = memory.messages[0].produced_for || 'unknown';
+                  metadata = memory.messages[0].metadata || {};
+                }
+                // Handle nested format (direct content field)
+                else if (memory.content) {
+                  content = memory.content;
+                  producer = memory.producer_id || memory.producer || 'unknown';
+                  producedFor = memory.produced_for_id || memory.produced_for || 'unknown';
+                  episodeType = memory.episode_type || 'message';
+                  metadata = memory.metadata || {};
+                }
+                
+                if (content && content.trim() !== '') {
+                  // Create unique key for deduplication (content + producer + producedFor)
+                  const episodeKey = `${content}|${producer}|${producedFor}`;
+                  
+                  // Skip if we've already seen this exact episode
+                  if (!seenEpisodes.has(episodeKey)) {
+                    seenEpisodes.add(episodeKey);
                     flattenedMemories.push({
-                      episode_content: item.content,
-                      producer: item.producer_id || 'unknown',
-                      produced_for: item.produced_for_id || 'unknown',
-                      episode_type: item.episode_type || 'dialog',
-                      timestamp: item.timestamp,
-                      uuid: item.uuid,
-                      content_type: item.content_type,
-                      group_id: item.group_id,
-                      session_id: item.session_id,
-                      user_metadata: item.user_metadata,
+                      episode_content: content,
+                      producer,
+                      produced_for: producedFor,
+                      episode_type: episodeType,
+                      timestamp,
+                      uuid,
+                      content_type: 'text',
+                      group_id: session.group_id,
+                      session_id: session.session_id,
+                      user_metadata: metadata,
                     });
                   }
                 }
-              } else if (group && typeof group === 'string' && group.trim() !== '') {
-                // Handle string items
-                flattenedMemories.push({
-                  episode_content: group,
-                  producer: 'unknown',
-                  produced_for: 'unknown',
-                  episode_type: 'dialog',
-                });
               }
             }
           }
           
           const episodicMemories = flattenedMemories as EpisodicMemoryItem[];
           
-          // Transform profile memory to expected structure
-          // MemMachine API returns array with tag/feature/value, we need to convert to facts structure
+          // Transform semantic memory to profile memory structure
+          // Semantic memory has: set_id, category, tag, feature_name, value, metadata
           const profileMemoryFacts: any[] = [];
-          if (Array.isArray(rawProfileMemory)) {
-            for (const item of rawProfileMemory) {
-              if (item && typeof item === 'object') {
-                profileMemoryFacts.push({
-                  subject: item.tag || 'General',
-                  predicate: item.feature || 'property',
-                  object: item.value || '',
-                  confidence: item.metadata?.similarity_score,
-                  source: `id_${item.metadata?.id}`,
-                });
+          const deduplicatedSemanticMemory: any[] = [];
+          const seenFacts = new Set<string>(); // Track seen combinations to avoid duplicates
+          
+          if (Array.isArray(profileMemoriesRaw)) {
+            for (const memory of profileMemoriesRaw) {
+              if (memory && typeof memory === 'object') {
+                // Semantic memory structure: tag, feature_name, value
+                const tag = memory.tag || 'General';
+                const featureName = memory.feature_name || 'property';
+                const value = memory.value || '';
+                
+                // Create unique key for deduplication
+                const factKey = `${tag}|${featureName}|${value}`;
+                
+                // Skip if we've already seen this exact fact
+                if (!seenFacts.has(factKey) && value.trim() !== '') {
+                  seenFacts.add(factKey);
+                  
+                  // Add to both structured format (for profileMemory) and raw format (for template)
+                  profileMemoryFacts.push({
+                    subject: tag,
+                    predicate: featureName,
+                    object: value,
+                    confidence: memory.metadata?.similarity_score,
+                    source: `id_${memory.metadata?.id || 'unknown'}`,
+                  });
+                  
+                  deduplicatedSemanticMemory.push(memory);
+                }
               }
             }
           }
@@ -930,14 +1149,32 @@ export class MemMachine implements INodeType {
             entities: {},
           };
           
-          // Categorize memories into temporal arrays (US1) with custom counts
-          const categorized = categorizeMemories(episodicMemories, historyCount, shortTermCount);
+          // Create categorized structure based on API response buckets
+          let categorized: CategorizedMemories;
+          if (shortTermEpisodesRaw.length > 0 || longTermEpisodesRaw.length > 0) {
+            // API provided pre-categorized data, use it directly
+            const shortTermMemories = episodicMemories.filter(m => 
+              shortTermEpisodesRaw.some(raw => raw.uid === m.uuid || raw.id === m.uuid)
+            );
+            const longTermMemories = episodicMemories.filter(m => 
+              longTermEpisodesRaw.some(raw => raw.uid === m.uuid || raw.id === m.uuid)
+            );
+            
+            categorized = {
+              history: [], // Not used in v2 template
+              shortTermMemory: shortTermMemories,
+              longTermMemory: longTermMemories,
+            };
+          } else {
+            // Fallback to time-based categorization for flat format
+            categorized = categorizeMemories(episodicMemories, historyCount, shortTermCount);
+          }
 
           // Render template if enabled (US3)
           let context = '';
           if (enableTemplate) {
             try {
-              context = renderTemplate(contextTemplate, categorized, profileMemory);
+              context = renderTemplate(contextTemplate, categorized, profileMemory, deduplicatedSemanticMemory, episodeSummary);
             } catch (error) {
               if (this.continueOnFail()) {
                 context = `*Template rendering failed: ${(error as Error).message}*`;
@@ -971,21 +1208,23 @@ export class MemMachine implements INodeType {
               profileCount: profileMemory.length,
               templateEnabled: enableTemplate,
               contextLength: context.length,
+              renderedContext: enableTemplate && context.length > 0 
+                ? (context.length > 2000 ? context.substring(0, 2000) + '\n\n...[truncated]' : context)
+                : '',
               // API Request details
               'http.method': 'POST',
               'http.url': `${baseURL}/v1/memories/search`,
               'http.target': '/v1/memories/search',
-              'request.headers': JSON.stringify({ 'session-id': session.session_id }),
               'request.body': JSON.stringify(requestOptions.body),
               'request.body.size': JSON.stringify(requestOptions.body).length,
               'request.query': query,
               'request.limit': limit,
               // API Response details
               'http.status_code': 200,
-              'response.body': responseBody.substring(0, 500), // Truncate to avoid huge metadata
+              'response.body': responseBody,
               'response.body.size': responseBody.length,
-              'response.episodic_count': Array.isArray(rawEpisodicMemory) ? rawEpisodicMemory.length : 0,
-              'response.profile_count': Array.isArray(rawProfileMemory) ? rawProfileMemory.length : 0,
+              'response.episodic_count': episodicMemories.length,
+              'response.profile_count': profileMemory.facts ? profileMemory.facts.length : 0,
             },
           });
           
@@ -1004,17 +1243,33 @@ export class MemMachine implements INodeType {
             pairedItem: { item: i },
           });
         }
-      } catch (error) {
+      } catch (error: any) {
+        // Record detailed error information in span
+        tracer.addEvent(operationSpan, 'error', {
+          'error.type': error.name || 'Error',
+          'error.message': error.message,
+          'error.statusCode': error.statusCode || 0,
+          'error.cause': error.cause ? JSON.stringify(error.cause).substring(0, 500) : '',
+        });
+        tracer.addAttributes(operationSpan, {
+          'error': true,
+          'error.type': error.name || 'Error',
+          'error.message': error.message,
+          'http.status_code': error.statusCode || 0,
+        });
+        
         // End span with error if tracing is enabled
         tracer.endSpanWithError(operationSpan, error as Error);
 
-        // T029: Complete cloud trace on error
+        // T029: Complete cloud trace on error with detailed information
         if (traceId) {
           cloudTracer.completeOperation(traceId, {
             success: false,
             error: {
-              message: (error as Error).message,
-              type: 'unexpected',
+              message: error.message,
+              type: error.name || 'Error',
+              code: error.statusCode?.toString() || error.code || 'UNKNOWN',
+              statusCode: error.statusCode || 0,
             },
           });
         }
@@ -1032,18 +1287,17 @@ export class MemMachine implements INodeType {
       }
     }
 
-    // T019: Append cloud-compliant trace output if enabled
+    // T019: Export traces to Jaeger if enabled (without adding to workflow output)
     if (cloudTracer.isEnabled()) {
-      const traceItems = cloudTracer.getTraceOutput();
-      returnData.push(...traceItems);
-
-      // Export to Jaeger if enabled
       const exportToJaeger = this.getNodeParameter('exportToJaeger', 0, false) as boolean;
+      
       if (exportToJaeger) {
         const jaegerEndpoint = this.getNodeParameter('jaegerOtlpEndpoint', 0, 'http://jaeger:4318/v1/traces') as string;
-        // Fire and forget - don't wait for export to complete
+        
+        // Fire and forget - export traces without blocking workflow
         cloudTracer.exportTracesToJaeger(jaegerEndpoint).catch((error: Error) => {
-          console.error('Failed to export traces to Jaeger:', error);
+          // Silently log error without adding to output
+          void error;
         });
       }
     }
@@ -1079,6 +1333,26 @@ export class MemMachine implements INodeType {
         );
       }
 
+      // T012: Extract v2 API parameters
+      const orgId = this.getNodeParameter('orgId', itemIndex) as string;
+      const projectId = this.getNodeParameter('projectId', itemIndex) as string;
+      
+      // Validate v2 API required fields
+      if (!orgId || orgId.trim() === '') {
+        throw new NodeOperationError(
+          this.getNode(),
+          'MemMachine API v2 requires organization ID for AI Agent memory.',
+          { itemIndex }
+        );
+      }
+      if (!projectId || projectId.trim() === '') {
+        throw new NodeOperationError(
+          this.getNode(),
+          'MemMachine API v2 requires project ID for AI Agent memory.',
+          { itemIndex }
+        );
+      }
+      
       // Extract session context parameters
       sessionId = this.getNodeParameter('sessionId', itemIndex) as string;
       const groupId = this.getNodeParameter('groupId', itemIndex, 'default') as string;
@@ -1131,10 +1405,12 @@ export class MemMachine implements INodeType {
       const exportToJaeger = this.getNodeParameter('exportToJaeger', itemIndex, false) as boolean;
       const jaegerEndpoint = this.getNodeParameter('jaegerOtlpEndpoint', itemIndex, 'http://jaeger:4318/v1/traces') as string;
 
-      // Create MemMachineMemory instance with configuration
+      // T012: Create MemMachineMemory instance with v2 API configuration
       const memory = new MemMachineMemory({
         apiUrl,
         apiKey,
+        orgId: orgId.trim(),
+        projectId: projectId.trim(),
         groupId,
         agentId: agentIdArray,
         userId: userIdArray,

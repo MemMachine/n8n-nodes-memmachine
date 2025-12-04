@@ -44,7 +44,7 @@ export class MemMachineApi implements ICredentialType {
   test: ICredentialTestRequest = {
     request: {
       baseURL: '={{$credentials.apiEndpoint}}',
-      url: '/health',
+      url: '/api/v2/health',
       method: 'GET',
     },
   };

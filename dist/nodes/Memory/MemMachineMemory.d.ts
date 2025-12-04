@@ -4,6 +4,8 @@ type MemoryVariables = Record<string, any>;
 export interface MemMachineMemoryConfig {
     apiUrl: string;
     apiKey?: string;
+    orgId: string;
+    projectId: string;
     groupId: string;
     agentId: string[];
     userId: string[];
