@@ -143,10 +143,9 @@ export class MemMachineMemory {
     }
 
     try {
-      console.log('[MemMachineMemory] loadMemoryVariables - CALLED - Retrieving conversation history', {
-        sessionId: this.config.sessionId,
-        contextWindowLength: this.config.contextWindowLength,
-      });
+      // Extract query from input values (usually 'input' key)
+      const query = _values[this.inputKey] || _values.input || '';
+
       this.config.logger?.info('loadMemoryVariables - Retrieving conversation history', {
         sessionId: this.config.sessionId,
         contextWindowLength: this.config.contextWindowLength,
@@ -156,13 +155,15 @@ export class MemMachineMemory {
       const searchBody = {
         org_id: this.config.orgId,
         project_id: this.config.projectId,
-        query: '', // Empty query to get all memories
+        query: query, // Use user input as query for semantic search
         top_k: this.config.contextWindowLength,
         types: [], // Empty array to get all memory types (episodic + semantic)
-        filter: JSON.stringify({
-          session_id: this.config.sessionId, // Filter by current session
-        }),
+        // filter: Removed as per user feedback
       };
+
+      // DEBUG: Log request body
+      console.log('[MemMachineMemory] DEBUG - Search Body:', JSON.stringify(searchBody, null, 2));
+      this.config.logger?.info('[MemMachineMemory] DEBUG - Search Body', searchBody);
 
       const headers = {
         'Content-Type': 'application/json',
@@ -195,7 +196,6 @@ export class MemMachineMemory {
         'payload.query': searchBody.query,
         'payload.top_k': searchBody.top_k || 10,
         'payload.types': JSON.stringify(searchBody.types),
-        'payload.filter': searchBody.filter,
       }));
 
       // Add request send event with structured KV logs
@@ -236,9 +236,17 @@ export class MemMachineMemory {
         body: requestBody,
       });
 
-      // T029: Parse v2 response (flat memories array with type field or nested content structure)
-      const data = await response.json() as { memories?: any[]; content?: any };
-      const apiResponseBody = JSON.stringify(data, null, 2); // Pretty print with 2-space indentation
+      // Read response body once
+      const responseText = await response.text();
+      let data: any = {};
+      
+      try {
+        data = JSON.parse(responseText);
+      } catch (e) {
+        // Not JSON
+      }
+      
+      const apiResponseBody = JSON.stringify(data, null, 2);
 
       // Complete API call span
       if (apiCallTraceId && this.config.cloudTracer) {
@@ -258,9 +266,20 @@ export class MemMachineMemory {
         'http.status_code': response.status,
         'http.status_text': response.statusText,
       });
+      
+      // DEBUG: Log successful response body to debug data format issues
+      if (response.ok) {
+        console.log('[MemMachineMemory] DEBUG - Search API Success Response:', apiResponseBody);
+      }
 
       if (!response.ok) {
-        const error = new Error(`MemMachine API error: ${response.status} ${response.statusText}`);
+        console.error('[MemMachineMemory] DEBUG - Search API Error:', {
+          status: response.status,
+          statusText: response.statusText,
+          body: responseText // Log the raw text
+        });
+        
+        const error = new Error(`MemMachine API error: ${response.status} ${response.statusText} - ${responseText}`);
         searchSpan && this.config.tracer?.endSpanWithError(searchSpan, error);
         throw error;
       }
@@ -329,6 +348,9 @@ export class MemMachineMemory {
         
         rawMemories = [...rawEpisodicMemory, ...rawSemanticMemory];
       }
+
+      // DEBUG: Log extracted memory counts
+      console.log(`[MemMachineMemory] DEBUG - Extracted Memories: Total=${rawMemories.length}, Episodic=${rawEpisodicMemory.length}, Semantic=${rawSemanticMemory.length}`);
       
       // Add response metrics to span
       searchSpan && this.config.tracer?.addAttributes(searchSpan, {
@@ -375,7 +397,33 @@ export class MemMachineMemory {
       
       if (Array.isArray(rawEpisodicMemory)) {
         for (const memory of rawEpisodicMemory) {
-          if (memory && Array.isArray(memory.messages) && memory.messages.length > 0) {
+          // Handle flat structure (MemMachine V2 actual response)
+          if (memory && memory.content && typeof memory.content === 'string' && memory.content.trim() !== '') {
+             const content = memory.content;
+             const producer = memory.producer_id || memory.producer || '';
+             
+             // Determine if this is a user message or agent message based on producer
+             // Check against configured userId array
+             const isUserMessage = this.config.userId.some((uid: string) => 
+               producer && producer.includes(uid)
+             ) || (memory.producer_role === 'user'); // Also check role if available
+             
+             if (isUserMessage) {
+               messages.push({
+                 type: 'human',
+                 content: content,
+                 additional_kwargs: {},
+               } as BaseMessage);
+             } else {
+               messages.push({
+                 type: 'ai',
+                 content: content,
+                 additional_kwargs: {},
+               } as BaseMessage);
+             }
+          }
+          // Handle nested structure (Legacy/Alternative format)
+          else if (memory && Array.isArray(memory.messages) && memory.messages.length > 0) {
             const message = memory.messages[0];
             if (message.content && message.content.trim() !== '') {
               // Determine if this is a user message or agent message based on producer
@@ -404,6 +452,8 @@ export class MemMachineMemory {
       // Sort by timestamp if available, otherwise maintain order
       // Limit to contextWindowLength most recent messages
       const recentMessages = messages.slice(-this.config.contextWindowLength!);
+
+      console.log(`[MemMachineMemory] DEBUG - Final Messages: Total=${messages.length}, Returned=${recentMessages.length}`);
 
       this.config.logger?.info('loadMemoryVariables - Retrieved messages', {
         totalMessages: messages.length,
@@ -503,11 +553,6 @@ export class MemMachineMemory {
       const userMessage = inputValues.input as string;
       const agentResponse = outputValues.output as string;
 
-      console.log('[MemMachineMemory] saveContext - CALLED - Storing conversation turn', {
-        sessionId: this.config.sessionId,
-        userMessageLength: userMessage?.length || 0,
-        agentResponseLength: agentResponse?.length || 0,
-      });
       this.config.logger?.info('saveContext - Storing conversation turn', {
         sessionId: this.config.sessionId,
         userMessageLength: userMessage?.length || 0,
@@ -607,14 +652,18 @@ export class MemMachineMemory {
           produced_for: producedFor,
           role: producer.includes('agent') ? 'assistant' : 'user',
           metadata: {
-            agent_id: this.config.agentId,
-            user_id: this.config.userId,
+            // agent_id and user_id removed as requested
+            session_id: this.config.sessionId,
             category: 'history',
             timestamp: new Date().toISOString(),
           },
         },
       ],
     };
+
+    // DEBUG: Log store body
+    console.log('[MemMachineMemory] DEBUG - Store Body:', JSON.stringify(storeBody, null, 2));
+    this.config.logger?.info('[MemMachineMemory] DEBUG - Store Body', storeBody);
 
     const headers = {
       'Content-Type': 'application/json',
@@ -779,7 +828,15 @@ export class MemMachineMemory {
     }
 
     if (!response.ok) {
-      const error = new Error(`MemMachine Store API error: ${response.status} ${response.statusText}`);
+      // Note: 404 check is handled above, this is for other errors
+      // responseText was already read above from clone
+      console.error('[MemMachineMemory] DEBUG - Store API Error:', {
+        status: response.status,
+        statusText: response.statusText,
+        body: responseText
+      });
+
+      const error = new Error(`MemMachine Store API error: ${response.status} ${response.statusText} - ${responseText}`);
       storeSpan && this.config.tracer?.endSpanWithError(storeSpan, error);
       throw error;
     }
@@ -803,10 +860,18 @@ export class MemMachineMemory {
     const flattenedMemories: EpisodicMemoryItem[] = [];
     const seenEpisodes = new Set<string>();
     
+    console.log('[MemMachineMemory] DEBUG - Processing episodic memories. Raw count:', rawEpisodicMemory.length);
+
     if (Array.isArray(rawEpisodicMemory)) {
       for (const group of rawEpisodicMemory) {
+        // Handle both nested array (groups) and flat object structures
+        const items = Array.isArray(group) ? group : [group];
+        
         if (Array.isArray(group)) {
-          for (const item of group) {
+             console.log('[MemMachineMemory] DEBUG - Processing memory group size:', group.length);
+        }
+
+        for (const item of items) {
             if (item && typeof item === 'object' && item.content && item.content.trim() !== '') {
               const content = item.content;
               const producer = item.producer_id || 'unknown';
@@ -819,6 +884,9 @@ export class MemMachineMemory {
               if (!seenEpisodes.has(episodeKey)) {
                 seenEpisodes.add(episodeKey);
                 
+                // DEBUG: Log accepted episode
+                // console.log('[MemMachineMemory] DEBUG - Adding episode:', content.substring(0, 30) + '...');
+
                 flattenedMemories.push({
                   episode_content: content,
                   producer,
@@ -831,12 +899,17 @@ export class MemMachineMemory {
                   session_id: item.session_id,
                   user_metadata: item.user_metadata,
                 });
+              } else {
+                console.log('[MemMachineMemory] DEBUG - Duplicate episode skipped:', episodeKey.substring(0, 50) + '...');
               }
+            } else {
+                console.log('[MemMachineMemory] DEBUG - Invalid or empty episode item encountered:', JSON.stringify(item).substring(0, 100));
             }
-          }
         }
       }
     }
+
+    console.log('[MemMachineMemory] DEBUG - Final flattened memories count:', flattenedMemories.length);
 
     // Transform profile memory to expected structure with deduplication
     const profileMemoryFacts: any[] = [];
@@ -876,10 +949,25 @@ export class MemMachineMemory {
       entities: {},
     };
 
+    console.log('[MemMachineMemory] DEBUG - Profile/Semantic Memory Processing:', {
+        rawProfileCount: Array.isArray(rawProfileMemory) ? rawProfileMemory.length : 0,
+        dedupedProfileCount: profileMemoryFacts.length,
+        dedupedSemanticCount: deduplicatedSemanticMemory.length
+    });
+
     // Categorize memories into temporal arrays
-    const historyCount = this.config.historyCount || 5;
-    const shortTermCount = this.config.shortTermCount || 10;
+    const historyCount = this.config.historyCount !== undefined ? this.config.historyCount : 5;
+    const shortTermCount = this.config.shortTermCount !== undefined ? this.config.shortTermCount : 10;
     const categorized = categorizeMemories(flattenedMemories, historyCount, shortTermCount);
+
+    console.log('[MemMachineMemory] DEBUG - Memory Categorization:', {
+        totalFlattened: flattenedMemories.length,
+        historyCountConfig: historyCount,
+        shortTermCountConfig: shortTermCount,
+        historyActual: categorized.history.length,
+        shortTermActual: categorized.shortTermMemory.length,
+        longTermActual: categorized.longTermMemory.length
+    });
 
     // Render template with all memory types
     const contextText = renderTemplate(

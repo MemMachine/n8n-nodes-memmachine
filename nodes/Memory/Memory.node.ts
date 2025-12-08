@@ -21,7 +21,7 @@ export class MemMachine implements INodeType {
     icon: 'file:Memory.icon.png',
     group: ['transform'],
     version: 1,
-    subtitle: '={{$parameter["operation"]}}',
+    subtitle: '={{$parameter["mode"] || "MemMachine"}}',
     description: 'Store and retrieve conversational memory using MemMachine',
     defaults: {
       name: 'MemMachine',
@@ -151,6 +151,9 @@ export class MemMachine implements INodeType {
 ## User Profile (Semantic Memory)
 {{semanticMemory}}
 
+## Conversation History
+{{history}}
+
 ## Recent Context (Short-Term Memory)
 {{shortTermMemory}}
 
@@ -180,7 +183,7 @@ export class MemMachine implements INodeType {
             type: 'number',
             default: 5,
             typeOptions: {
-              minValue: 1,
+              minValue: 0,
               maxValue: 50,
             },
             description: 'Number of most recent conversation turns to include in history section',
@@ -191,7 +194,7 @@ export class MemMachine implements INodeType {
             type: 'number',
             default: 10,
             typeOptions: {
-              minValue: 1,
+              minValue: 0,
               maxValue: 50,
             },
             description: 'Number of items to include in short-term memory section',
@@ -428,6 +431,9 @@ export class MemMachine implements INodeType {
 ## User Profile (Semantic Memory)
 {{semanticMemory}}
 
+## Conversation History
+{{history}}
+
 ## Recent Context (Short-Term Memory)
 {{shortTermMemory}}
 
@@ -458,7 +464,7 @@ export class MemMachine implements INodeType {
             type: 'number',
             default: 5,
             typeOptions: {
-              minValue: 1,
+              minValue: 0,
               maxValue: 50,
             },
             description: 'Number of most recent items to include in history',
@@ -469,7 +475,7 @@ export class MemMachine implements INodeType {
             type: 'number',
             default: 10,
             typeOptions: {
-              minValue: 1,
+              minValue: 0,
               maxValue: 50,
             },
             description: 'Number of items to include in short-term memory',
@@ -571,7 +577,28 @@ export class MemMachine implements INodeType {
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
     const items = this.getInputData();
     const returnData: INodeExecutionData[] = [];
-    const operation = this.getNodeParameter('operation', 0) as string;
+    
+    // Get mode first to determine if operation parameter is available
+    const mode = this.getNodeParameter('mode', 0, 'manual') as string;
+    let operation = '';
+    
+    // Only get operation parameter if mode is 'manual' (it's only visible in manual mode)
+    if (mode === 'manual') {
+      try {
+        operation = this.getNodeParameter('operation', 0, 'store') as string;
+      } catch (error) {
+        throw new NodeOperationError(
+          this.getNode(),
+          `Failed to get 'operation' parameter: ${(error as Error).message}. Please ensure the Operation parameter is set correctly when Mode is 'Manual Operations'.`,
+          { itemIndex: 0 }
+        );
+      }
+    } else {
+      // In memory mode, execute usually isn't called. 
+      // However, if the user connects it to the main flow (to make it "light up" or for visual confirmation),
+      // we pass the input data through so we don't break the execution chain.
+      return [items];
+    }
 
     // Legacy tracer (no-op for backward compatibility with existing code)
     const tracer = new MemoryTracer({
@@ -1311,11 +1338,36 @@ export class MemMachine implements INodeType {
    */
   async supplyData(this: ISupplyDataFunctions, itemIndex: number): Promise<SupplyData> {
     // Initialize cloud tracer for AI Agent mode (outside try block for error handling)
-    const tracingEnabled = this.getNodeParameter('tracingEnabled', itemIndex, false) as boolean;
+    // Use safe parameter retrieval with defaults and error handling
+    let tracingEnabled = false;
+    let traceFormat: 'json' | 'human' = 'json';
+    let traceVerbosity: 'minimal' | 'normal' | 'verbose' = 'minimal';
+    
+    try {
+      tracingEnabled = this.getNodeParameter('tracingEnabled', itemIndex, false) as boolean;
+    } catch (error) {
+      // Default to false if parameter can't be retrieved
+      tracingEnabled = false;
+    }
+    
+    try {
+      traceFormat = this.getNodeParameter('traceFormat', itemIndex, 'json') as 'json' | 'human';
+    } catch (error) {
+      // Default to 'json' if parameter can't be retrieved
+      traceFormat = 'json';
+    }
+    
+    try {
+      traceVerbosity = this.getNodeParameter('traceVerbosity', itemIndex, 'minimal') as 'minimal' | 'normal' | 'verbose';
+    } catch (error) {
+      // Default to 'minimal' if parameter can't be retrieved
+      traceVerbosity = 'minimal';
+    }
+    
     const cloudTracer = new MemoryTracer({
       enabled: tracingEnabled,
-      format: this.getNodeParameter('traceFormat', itemIndex, 'json') as 'json' | 'human',
-      verbosity: this.getNodeParameter('traceVerbosity', itemIndex, 'minimal') as 'minimal' | 'normal' | 'verbose',
+      format: traceFormat,
+      verbosity: traceVerbosity,
       maxEntrySize: 10240, // 10KB per FR-010
     });
 
@@ -1323,8 +1375,17 @@ export class MemMachine implements INodeType {
     let traceId = '';
 
     try {
-      // Validate mode
-      const mode = this.getNodeParameter('mode', itemIndex) as string;
+      // Validate mode with detailed error handling
+      let mode: string;
+      try {
+        mode = this.getNodeParameter('mode', itemIndex, 'memory') as string;
+      } catch (error) {
+        throw new NodeOperationError(
+          this.getNode(),
+          `Failed to get 'mode' parameter: ${(error as Error).message}. Please ensure the Mode parameter is set correctly.`,
+          { itemIndex }
+        );
+      }
       if (mode !== 'memory') {
         throw new NodeOperationError(
           this.getNode(),
@@ -1333,39 +1394,122 @@ export class MemMachine implements INodeType {
         );
       }
 
-      // T012: Extract v2 API parameters
-      const orgId = this.getNodeParameter('orgId', itemIndex) as string;
-      const projectId = this.getNodeParameter('projectId', itemIndex) as string;
+      // T012: Extract v2 API parameters with detailed error handling
+      let orgId: string;
+      let projectId: string;
+      try {
+        orgId = this.getNodeParameter('orgId', itemIndex, 'group_v1') as string;
+      } catch (error) {
+        throw new NodeOperationError(
+          this.getNode(),
+          `Failed to get 'orgId' (Organization ID) parameter: ${(error as Error).message}. Please ensure the Organization ID parameter is set correctly.`,
+          { itemIndex }
+        );
+      }
+      try {
+        projectId = this.getNodeParameter('projectId', itemIndex, '') as string;
+      } catch (error) {
+        throw new NodeOperationError(
+          this.getNode(),
+          `Failed to get 'projectId' (Project ID) parameter: ${(error as Error).message}. If using an expression like {{$json.sessionId}}, ensure the input data contains sessionId. Otherwise, provide a static value.`,
+          { itemIndex }
+        );
+      }
       
       // Validate v2 API required fields
       if (!orgId || orgId.trim() === '') {
         throw new NodeOperationError(
           this.getNode(),
-          'MemMachine API v2 requires organization ID for AI Agent memory.',
+          'MemMachine API v2 requires organization ID for AI Agent memory. Please set the Organization ID parameter.',
           { itemIndex }
         );
       }
       if (!projectId || projectId.trim() === '') {
         throw new NodeOperationError(
           this.getNode(),
-          'MemMachine API v2 requires project ID for AI Agent memory.',
+          'MemMachine API v2 requires project ID for AI Agent memory. Please set the Project ID parameter (e.g., use {{$json.sessionId}} or provide a static value).',
           { itemIndex }
         );
       }
       
-      // Extract session context parameters
-      sessionId = this.getNodeParameter('sessionId', itemIndex) as string;
-      const groupId = this.getNodeParameter('groupId', itemIndex, 'default') as string;
-      const agentId = this.getNodeParameter('agentId', itemIndex) as string;
-      const userId = this.getNodeParameter('userId', itemIndex) as string;
-      const contextWindowLength = this.getNodeParameter('contextWindowLength', itemIndex, 10) as number;
+      // Extract session context parameters with detailed error handling
+      // Use projectId as session identifier (consistent with execute method)
+      sessionId = projectId.trim();
       
-      // Extract template parameters
-      const enableTemplate = this.getNodeParameter('enableMemoryTemplate', itemIndex, false) as boolean;
-      const contextTemplate = this.getNodeParameter('memoryContextTemplate', itemIndex, '') as string;
-      const templateOptions = this.getNodeParameter('memoryTemplateOptions', itemIndex, {}) as IDataObject;
-      const historyCount = (templateOptions.historyCount as number) || 5;
-      const shortTermCount = (templateOptions.shortTermCount as number) || 10;
+      let groupId: string;
+      let agentId: string;
+      let userId: string;
+      try {
+        groupId = this.getNodeParameter('groupId', itemIndex, 'default') as string;
+      } catch (error) {
+        throw new NodeOperationError(
+          this.getNode(),
+          `Failed to get 'groupId' (Group ID) parameter: ${(error as Error).message}. Please ensure the Group ID parameter is set correctly.`,
+          { itemIndex }
+        );
+      }
+      try {
+        agentId = this.getNodeParameter('agentId', itemIndex, 'agent_assistant') as string;
+      } catch (error) {
+        throw new NodeOperationError(
+          this.getNode(),
+          `Failed to get 'agentId' (Agent ID) parameter: ${(error as Error).message}. If using an expression like {{$workflow.name}}, ensure it can be evaluated. Otherwise, provide a static value.`,
+          { itemIndex }
+        );
+      }
+      try {
+        userId = this.getNodeParameter('userId', itemIndex, 'user_v1') as string;
+      } catch (error) {
+        throw new NodeOperationError(
+          this.getNode(),
+          `Failed to get 'userId' (User ID) parameter: ${(error as Error).message}. Please ensure the User ID parameter is set correctly.`,
+          { itemIndex }
+        );
+      }
+      
+      let contextWindowLength: number;
+      try {
+        contextWindowLength = this.getNodeParameter('contextWindowLength', itemIndex, 10) as number;
+      } catch (error) {
+        // Use default value if parameter can't be retrieved
+        contextWindowLength = 10;
+      }
+      
+      // Extract template parameters with conditional access
+      // Note: memoryContextTemplate and memoryTemplateOptions are only visible when enableMemoryTemplate is true
+      let enableTemplate: boolean;
+      try {
+        enableTemplate = this.getNodeParameter('enableMemoryTemplate', itemIndex, false) as boolean;
+      } catch (error) {
+        // If parameter can't be retrieved, default to false
+        enableTemplate = false;
+      }
+      
+      let contextTemplate = '';
+      let templateOptions: IDataObject = {};
+      let historyCount = 5;
+      let shortTermCount = 10;
+      
+      // Only get template parameters if template is enabled (they're only visible when enabled)
+      if (enableTemplate) {
+        try {
+          contextTemplate = this.getNodeParameter('memoryContextTemplate', itemIndex, '') as string;
+        } catch (error) {
+          throw new NodeOperationError(
+            this.getNode(),
+            `Failed to get 'memoryContextTemplate' parameter: ${(error as Error).message}. This parameter is only available when 'Enable Context Template' is turned on. Please turn on 'Enable Context Template' or turn it off if you don't need template formatting.`,
+            { itemIndex }
+          );
+        }
+        try {
+          templateOptions = this.getNodeParameter('memoryTemplateOptions', itemIndex, {}) as IDataObject;
+        } catch (error) {
+          // Template options are optional, use defaults if unavailable
+          templateOptions = {};
+        }
+        historyCount = (templateOptions.historyCount as number) || 5;
+        shortTermCount = (templateOptions.shortTermCount as number) || 10;
+      }
 
       // Get credentials
       const credentials = await this.getCredentials('memMachineApi');
@@ -1402,8 +1546,22 @@ export class MemMachine implements INodeType {
 
       // Pass both tracers - cloud tracer for parent/child spans, legacy for compatibility
       const legacyTracer: MemoryTracer | undefined = undefined;
-      const exportToJaeger = this.getNodeParameter('exportToJaeger', itemIndex, false) as boolean;
-      const jaegerEndpoint = this.getNodeParameter('jaegerOtlpEndpoint', itemIndex, 'http://jaeger:4318/v1/traces') as string;
+      let exportToJaeger = false;
+      let jaegerEndpoint = 'http://jaeger:4318/v1/traces';
+      
+      try {
+        exportToJaeger = this.getNodeParameter('exportToJaeger', itemIndex, false) as boolean;
+      } catch (error) {
+        // Default to false if parameter can't be retrieved
+        exportToJaeger = false;
+      }
+      
+      try {
+        jaegerEndpoint = this.getNodeParameter('jaegerOtlpEndpoint', itemIndex, 'http://jaeger:4318/v1/traces') as string;
+      } catch (error) {
+        // Default to standard Jaeger endpoint if parameter can't be retrieved
+        jaegerEndpoint = 'http://jaeger:4318/v1/traces';
+      }
 
       // T012: Create MemMachineMemory instance with v2 API configuration
       const memory = new MemMachineMemory({
