@@ -245,7 +245,7 @@ export class MemMachineMemory {
       } catch (e) {
         // Not JSON
       }
-      
+
       const apiResponseBody = JSON.stringify(data, null, 2);
 
       // Complete API call span
@@ -266,7 +266,7 @@ export class MemMachineMemory {
         'http.status_code': response.status,
         'http.status_text': response.statusText,
       });
-      
+
       // DEBUG: Log successful response body to debug data format issues
       if (response.ok) {
         console.log('[MemMachineMemory] DEBUG - Search API Success Response:', apiResponseBody);
@@ -278,7 +278,7 @@ export class MemMachineMemory {
           statusText: response.statusText,
           body: responseText // Log the raw text
         });
-        
+
         const error = new Error(`MemMachine API error: ${response.status} ${response.statusText} - ${responseText}`);
         searchSpan && this.config.tracer?.endSpanWithError(searchSpan, error);
         throw error;
@@ -351,7 +351,7 @@ export class MemMachineMemory {
 
       // DEBUG: Log extracted memory counts
       console.log(`[MemMachineMemory] DEBUG - Extracted Memories: Total=${rawMemories.length}, Episodic=${rawEpisodicMemory.length}, Semantic=${rawSemanticMemory.length}`);
-      
+
       // Add response metrics to span
       searchSpan && this.config.tracer?.addAttributes(searchSpan, {
         'memmachine.response.total_count': rawMemories.length,
@@ -401,13 +401,13 @@ export class MemMachineMemory {
           if (memory && memory.content && typeof memory.content === 'string' && memory.content.trim() !== '') {
              const content = memory.content;
              const producer = memory.producer_id || memory.producer || '';
-             
+
              // Determine if this is a user message or agent message based on producer
              // Check against configured userId array
              const isUserMessage = this.config.userId.some((uid: string) => 
                producer && producer.includes(uid)
              ) || (memory.producer_role === 'user'); // Also check role if available
-             
+
              if (isUserMessage) {
                messages.push({
                  type: 'human',
@@ -423,7 +423,7 @@ export class MemMachineMemory {
              }
           }
           // Handle nested structure (Legacy/Alternative format)
-          else if (memory && Array.isArray(memory.messages) && memory.messages.length > 0) {
+          else if (memory && Array.isArray(memory.messages) && memory.messages.length > 0) { 
             const message = memory.messages[0];
             if (message.content && message.content.trim() !== '') {
               // Determine if this is a user message or agent message based on producer
@@ -452,7 +452,7 @@ export class MemMachineMemory {
       // Sort by timestamp if available, otherwise maintain order
       // Limit to contextWindowLength most recent messages
       const recentMessages = messages.slice(-this.config.contextWindowLength!);
-
+      
       console.log(`[MemMachineMemory] DEBUG - Final Messages: Total=${messages.length}, Returned=${recentMessages.length}`);
 
       this.config.logger?.info('loadMemoryVariables - Retrieved messages', {
@@ -660,7 +660,7 @@ export class MemMachineMemory {
         },
       ],
     };
-
+    
     // DEBUG: Log store body
     console.log('[MemMachineMemory] DEBUG - Store Body:', JSON.stringify(storeBody, null, 2));
     this.config.logger?.info('[MemMachineMemory] DEBUG - Store Body', storeBody);
@@ -866,9 +866,9 @@ export class MemMachineMemory {
       for (const group of rawEpisodicMemory) {
         // Handle both nested array (groups) and flat object structures
         const items = Array.isArray(group) ? group : [group];
-        
+
         if (Array.isArray(group)) {
-             console.log('[MemMachineMemory] DEBUG - Processing memory group size:', group.length);
+          console.log('[MemMachineMemory] DEBUG - Processing memory group size:', group.length);
         }
 
         for (const item of items) {
@@ -959,7 +959,7 @@ export class MemMachineMemory {
     const historyCount = this.config.historyCount !== undefined ? this.config.historyCount : 5;
     const shortTermCount = this.config.shortTermCount !== undefined ? this.config.shortTermCount : 10;
     const categorized = categorizeMemories(flattenedMemories, historyCount, shortTermCount);
-
+    
     console.log('[MemMachineMemory] DEBUG - Memory Categorization:', {
         totalFlattened: flattenedMemories.length,
         historyCountConfig: historyCount,

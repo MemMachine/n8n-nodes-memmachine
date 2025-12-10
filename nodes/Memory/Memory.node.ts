@@ -577,11 +577,11 @@ export class MemMachine implements INodeType {
   async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
     const items = this.getInputData();
     const returnData: INodeExecutionData[] = [];
-    
+
     // Get mode first to determine if operation parameter is available
     const mode = this.getNodeParameter('mode', 0, 'manual') as string;
     let operation = '';
-    
+
     // Only get operation parameter if mode is 'manual' (it's only visible in manual mode)
     if (mode === 'manual') {
       try {
@@ -1342,28 +1342,28 @@ export class MemMachine implements INodeType {
     let tracingEnabled = false;
     let traceFormat: 'json' | 'human' = 'json';
     let traceVerbosity: 'minimal' | 'normal' | 'verbose' = 'minimal';
-    
+
     try {
       tracingEnabled = this.getNodeParameter('tracingEnabled', itemIndex, false) as boolean;
     } catch (error) {
       // Default to false if parameter can't be retrieved
       tracingEnabled = false;
     }
-    
+
     try {
       traceFormat = this.getNodeParameter('traceFormat', itemIndex, 'json') as 'json' | 'human';
     } catch (error) {
       // Default to 'json' if parameter can't be retrieved
       traceFormat = 'json';
     }
-    
+
     try {
       traceVerbosity = this.getNodeParameter('traceVerbosity', itemIndex, 'minimal') as 'minimal' | 'normal' | 'verbose';
     } catch (error) {
       // Default to 'minimal' if parameter can't be retrieved
       traceVerbosity = 'minimal';
     }
-    
+
     const cloudTracer = new MemoryTracer({
       enabled: tracingEnabled,
       format: traceFormat,
@@ -1466,7 +1466,7 @@ export class MemMachine implements INodeType {
           { itemIndex }
         );
       }
-      
+
       let contextWindowLength: number;
       try {
         contextWindowLength = this.getNodeParameter('contextWindowLength', itemIndex, 10) as number;
@@ -1474,7 +1474,7 @@ export class MemMachine implements INodeType {
         // Use default value if parameter can't be retrieved
         contextWindowLength = 10;
       }
-      
+
       // Extract template parameters with conditional access
       // Note: memoryContextTemplate and memoryTemplateOptions are only visible when enableMemoryTemplate is true
       let enableTemplate: boolean;
@@ -1484,12 +1484,12 @@ export class MemMachine implements INodeType {
         // If parameter can't be retrieved, default to false
         enableTemplate = false;
       }
-      
+
       let contextTemplate = '';
       let templateOptions: IDataObject = {};
       let historyCount = 5;
       let shortTermCount = 10;
-      
+
       // Only get template parameters if template is enabled (they're only visible when enabled)
       if (enableTemplate) {
         try {
@@ -1548,14 +1548,14 @@ export class MemMachine implements INodeType {
       const legacyTracer: MemoryTracer | undefined = undefined;
       let exportToJaeger = false;
       let jaegerEndpoint = 'http://jaeger:4318/v1/traces';
-      
+
       try {
         exportToJaeger = this.getNodeParameter('exportToJaeger', itemIndex, false) as boolean;
       } catch (error) {
         // Default to false if parameter can't be retrieved
         exportToJaeger = false;
       }
-      
+
       try {
         jaegerEndpoint = this.getNodeParameter('jaegerOtlpEndpoint', itemIndex, 'http://jaeger:4318/v1/traces') as string;
       } catch (error) {
