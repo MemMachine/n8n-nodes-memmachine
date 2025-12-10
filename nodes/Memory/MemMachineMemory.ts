@@ -162,7 +162,6 @@ export class MemMachineMemory {
       };
 
       // DEBUG: Log request body
-      console.log('[MemMachineMemory] DEBUG - Search Body:', JSON.stringify(searchBody, null, 2));
       this.config.logger?.info('[MemMachineMemory] DEBUG - Search Body', searchBody);
 
       const headers = {
@@ -269,11 +268,11 @@ export class MemMachineMemory {
 
       // DEBUG: Log successful response body to debug data format issues
       if (response.ok) {
-        console.log('[MemMachineMemory] DEBUG - Search API Success Response:', apiResponseBody);
+        this.config.logger?.info('[MemMachineMemory] DEBUG - Search API Success Response:', apiResponseBody);
       }
 
       if (!response.ok) {
-        console.error('[MemMachineMemory] DEBUG - Search API Error:', {
+        this.config.logger?.error('[MemMachineMemory] DEBUG - Search API Error:', {
           status: response.status,
           statusText: response.statusText,
           body: responseText // Log the raw text
@@ -350,7 +349,7 @@ export class MemMachineMemory {
       }
 
       // DEBUG: Log extracted memory counts
-      console.log(`[MemMachineMemory] DEBUG - Extracted Memories: Total=${rawMemories.length}, Episodic=${rawEpisodicMemory.length}, Semantic=${rawSemanticMemory.length}`);
+      this.config.logger?.info(`[MemMachineMemory] DEBUG - Extracted Memories: Total=${rawMemories.length}, Episodic=${rawEpisodicMemory.length}, Semantic=${rawSemanticMemory.length}`);
 
       // Add response metrics to span
       searchSpan && this.config.tracer?.addAttributes(searchSpan, {
@@ -453,7 +452,7 @@ export class MemMachineMemory {
       // Limit to contextWindowLength most recent messages
       const recentMessages = messages.slice(-this.config.contextWindowLength!);
       
-      console.log(`[MemMachineMemory] DEBUG - Final Messages: Total=${messages.length}, Returned=${recentMessages.length}`);
+      this.config.logger?.info(`[MemMachineMemory] DEBUG - Final Messages: Total=${messages.length}, Returned=${recentMessages.length}`);
 
       this.config.logger?.info('loadMemoryVariables - Retrieved messages', {
         totalMessages: messages.length,
@@ -662,7 +661,6 @@ export class MemMachineMemory {
     };
     
     // DEBUG: Log store body
-    console.log('[MemMachineMemory] DEBUG - Store Body:', JSON.stringify(storeBody, null, 2));
     this.config.logger?.info('[MemMachineMemory] DEBUG - Store Body', storeBody);
 
     const headers = {
@@ -849,7 +847,7 @@ export class MemMachineMemory {
    * Format memory using template and return as system message
    */
   private formatTemplatedMemory(rawEpisodicMemory: any[], rawProfileMemory: any[], rawSemanticMemory: any[], episodeSummary: string[]): MemoryVariables {
-    console.log('[MemMachineMemory] Formatting templated memory', {
+    this.config.logger?.info('[MemMachineMemory] Formatting templated memory', {
       episodicCount: rawEpisodicMemory.length,
       profileCount: rawProfileMemory.length,
       semanticCount: rawSemanticMemory.length,
@@ -860,7 +858,7 @@ export class MemMachineMemory {
     const flattenedMemories: EpisodicMemoryItem[] = [];
     const seenEpisodes = new Set<string>();
     
-    console.log('[MemMachineMemory] DEBUG - Processing episodic memories. Raw count:', rawEpisodicMemory.length);
+    this.config.logger?.info('[MemMachineMemory] DEBUG - Processing episodic memories. Raw count:', rawEpisodicMemory.length);
 
     if (Array.isArray(rawEpisodicMemory)) {
       for (const group of rawEpisodicMemory) {
@@ -868,7 +866,7 @@ export class MemMachineMemory {
         const items = Array.isArray(group) ? group : [group];
 
         if (Array.isArray(group)) {
-          console.log('[MemMachineMemory] DEBUG - Processing memory group size:', group.length);
+          this.config.logger?.info('[MemMachineMemory] DEBUG - Processing memory group size:', group.length);
         }
 
         for (const item of items) {
@@ -885,7 +883,7 @@ export class MemMachineMemory {
                 seenEpisodes.add(episodeKey);
                 
                 // DEBUG: Log accepted episode
-                // console.log('[MemMachineMemory] DEBUG - Adding episode:', content.substring(0, 30) + '...');
+                // this.config.logger?.info('[MemMachineMemory] DEBUG - Adding episode:', content.substring(0, 30) + '...');
 
                 flattenedMemories.push({
                   episode_content: content,
@@ -900,16 +898,16 @@ export class MemMachineMemory {
                   user_metadata: item.user_metadata,
                 });
               } else {
-                console.log('[MemMachineMemory] DEBUG - Duplicate episode skipped:', episodeKey.substring(0, 50) + '...');
+                this.config.logger?.info('[MemMachineMemory] DEBUG - Duplicate episode skipped:', episodeKey.substring(0, 50) + '...');
               }
             } else {
-                console.log('[MemMachineMemory] DEBUG - Invalid or empty episode item encountered:', JSON.stringify(item).substring(0, 100));
+                this.config.logger?.info('[MemMachineMemory] DEBUG - Invalid or empty episode item encountered:', JSON.stringify(item).substring(0, 100));
             }
         }
       }
     }
 
-    console.log('[MemMachineMemory] DEBUG - Final flattened memories count:', flattenedMemories.length);
+    this.config.logger?.info('[MemMachineMemory] DEBUG - Final flattened memories count:', flattenedMemories.length);
 
     // Transform profile memory to expected structure with deduplication
     const profileMemoryFacts: any[] = [];
@@ -949,7 +947,7 @@ export class MemMachineMemory {
       entities: {},
     };
 
-    console.log('[MemMachineMemory] DEBUG - Profile/Semantic Memory Processing:', {
+    this.config.logger?.info('[MemMachineMemory] DEBUG - Profile/Semantic Memory Processing:', {
         rawProfileCount: Array.isArray(rawProfileMemory) ? rawProfileMemory.length : 0,
         dedupedProfileCount: profileMemoryFacts.length,
         dedupedSemanticCount: deduplicatedSemanticMemory.length
@@ -960,7 +958,7 @@ export class MemMachineMemory {
     const shortTermCount = this.config.shortTermCount !== undefined ? this.config.shortTermCount : 10;
     const categorized = categorizeMemories(flattenedMemories, historyCount, shortTermCount);
     
-    console.log('[MemMachineMemory] DEBUG - Memory Categorization:', {
+    this.config.logger?.info('[MemMachineMemory] DEBUG - Memory Categorization:', {
         totalFlattened: flattenedMemories.length,
         historyCountConfig: historyCount,
         shortTermCountConfig: shortTermCount,
@@ -978,8 +976,8 @@ export class MemMachineMemory {
       episodeSummary,
     );
 
-    console.log('[MemMachineMemory] Templated context length:', contextText.length);
-    console.log('[MemMachineMemory] Rendered context preview:', contextText.substring(0, 500));
+    this.config.logger?.info('[MemMachineMemory] Templated context length:', contextText.length);
+    this.config.logger?.info('[MemMachineMemory] Rendered context preview:', contextText.substring(0, 500));
 
     // Return formatted context as a system message (n8n compatible format)
     return {
