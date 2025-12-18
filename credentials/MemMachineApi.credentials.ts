@@ -9,6 +9,8 @@ export class MemMachineApi implements ICredentialType {
   name = 'memMachineApi';
   displayName = 'MemMachine API';
   documentationUrl = 'https://docs.memmachine.ai';
+  icon = 'file:MemMachine.icon.svg' as const;
+
   properties: INodeProperties[] = [
     {
       displayName: 'API Endpoint',
@@ -16,7 +18,8 @@ export class MemMachineApi implements ICredentialType {
       type: 'string',
       default: 'http://localhost:8080',
       placeholder: 'http://localhost:8080',
-      description: 'Base URL for MemMachine API (e.g., http://localhost:8080 or your production endpoint)',
+      description:
+        'Base URL for MemMachine API (e.g., http://localhost:8080 or your production endpoint)',
       required: true,
     },
     {
@@ -27,7 +30,8 @@ export class MemMachineApi implements ICredentialType {
         password: true,
       },
       default: '',
-      description: 'Optional API key for authenticated deployments (leave empty for local development)',
+      description:
+        'Optional API key for authenticated deployments (leave empty for local development)',
       required: false,
     },
   ];
@@ -44,7 +48,7 @@ export class MemMachineApi implements ICredentialType {
   test: ICredentialTestRequest = {
     request: {
       baseURL: '={{$credentials.apiEndpoint}}',
-      url: '/api/v2/health',
+      url: '/health',
       method: 'GET',
     },
   };

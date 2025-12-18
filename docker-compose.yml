@@ -6,14 +6,14 @@ services:
     container_name: n8n-memory-test
     restart: unless-stopped
     ports:
-      - "5678:5678"
+      - '5678:5678'
     environment:
       - N8N_LOG_LEVEL=debug
       - NODE_ENV=production
       - N8N_SECURE_COOKIE=false
       # Allow custom nodes from local directory
       - N8N_CUSTOM_EXTENSIONS=/data/nodes
-      - N8N_COMMUNITY_PACKAGES_ENABLED=true  
+      - N8N_COMMUNITY_PACKAGES_ENABLED=true
       # Jaeger tracing configuration
       - JAEGER_AGENT_HOST=jaeger
       - JAEGER_AGENT_PORT=6831
@@ -29,7 +29,7 @@ services:
     depends_on:
       - jaeger
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5678/healthz"]
+      test: ['CMD', 'wget', '--spider', '-q', 'http://localhost:5678/healthz']
       interval: 30s
       timeout: 10s
       retries: 3
@@ -39,21 +39,21 @@ services:
     container_name: jaeger-tracing
     restart: unless-stopped
     ports:
-      - "5775:5775/udp"   # zipkin.thrift over compact thrift protocol
-      - "6831:6831/udp"   # jaeger.thrift over compact thrift protocol
-      - "6832:6832/udp"   # jaeger.thrift over binary thrift protocol
-      - "5778:5778"       # serve configs
-      - "16686:16686"     # Jaeger UI
-      - "14268:14268"     # jaeger.thrift directly from clients
-      - "14250:14250"     # model.proto
-      - "9411:9411"       # Zipkin compatible endpoint
+      - '5775:5775/udp' # zipkin.thrift over compact thrift protocol
+      - '6831:6831/udp' # jaeger.thrift over compact thrift protocol
+      - '6832:6832/udp' # jaeger.thrift over binary thrift protocol
+      - '5778:5778' # serve configs
+      - '16686:16686' # Jaeger UI
+      - '14268:14268' # jaeger.thrift directly from clients
+      - '14250:14250' # model.proto
+      - '9411:9411' # Zipkin compatible endpoint
     environment:
       - COLLECTOR_ZIPKIN_HOST_PORT=:9411
       - COLLECTOR_OTLP_ENABLED=true
     networks:
       - n8n-network
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686"]
+      test: ['CMD', 'wget', '--spider', '-q', 'http://localhost:16686']
       interval: 30s
       timeout: 10s
       retries: 3

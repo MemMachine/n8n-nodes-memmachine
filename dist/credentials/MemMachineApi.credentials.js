@@ -5,6 +5,7 @@ class MemMachineApi {
     name = 'memMachineApi';
     displayName = 'MemMachine API';
     documentationUrl = 'https://docs.memmachine.ai';
+    icon = 'file:MemMachine.icon.svg';
     properties = [
         {
             displayName: 'API Endpoint',
@@ -38,7 +39,7 @@ class MemMachineApi {
     test = {
         request: {
             baseURL: '={{$credentials.apiEndpoint}}',
-            url: '/api/v2/health',
+            url: '/health',
             method: 'GET',
         },
     };

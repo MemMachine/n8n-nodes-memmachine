@@ -1,41 +1,71 @@
 {
   "name": "@memmachine/n8n-nodes-memmachine",
-  "version": "2.0.0",
+  "version": "2.0.3",
   "description": "n8n community node for MemMachine conversational memory integration with AI Agents",
-  "author": {
-    "name": "Christian Kniep",
-    "email": "christian.kniep@memverge.com"
-  },
-  "license": "MIT",
   "keywords": [
     "n8n",
+    "n8n-community-node-package",
     "memory",
     "ai-agent",
     "memmachine",
     "conversation",
     "context"
   ],
+  "license": "MIT",
+  "homepage": "https://memmachine.ai",
+  "author": {
+    "name": "Christian Kniep",
+    "email": "christian.kniep@memverge.com"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/MemMachine/n8n-nodes-memmachine"
   },
-  "homepage": "https://memmachine.ai",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "npm run clean && eslint . --fix && prettier --write . && tsc && gulp build:icons",
+    "dev": "tsc --watch",
+    "dev:docker": "./start-dev.sh",
+    "docker:start": "docker-compose up -d",
+    "docker:stop": "docker-compose down",
+    "docker:logs": "docker-compose logs -f n8n",
+    "docker:restart": "docker-compose restart n8n",
+    "format": "prettier --write .",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "prepublishOnly": "npm run build && npm run lint -c .eslintrc.prepublish.js nodes credentials package.json"
+  },
+  "files": [
+    "dist"
+  ],
   "n8n": {
     "n8nNodesApiVersion": 1,
     "credentials": [
       "dist/credentials/MemMachineApi.credentials.js"
     ],
     "nodes": [
-      "dist/nodes/Memory/Memory.node.js"
+      "dist/nodes/MemMachine/MemMachine.node.js",
+      "dist/nodes/MemoryMemMachine/MemoryMemMachine.node.js"
     ]
   },
-  "engines": {
-    "node": ">=22.0.0"
+  "devDependencies": {
+    "@typescript-eslint/parser": "~6.20",
+    "eslint-plugin-n8n-nodes-base": "^1.16.1",
+    "gulp": "^5.0.1",
+    "n8n-workflow": "*",
+    "prettier": "^3.0.0",
+    "rimraf": "^6.1.2",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.3.3"
   },
   "peerDependencies": {
-    "n8n-workflow": ">=1.107.0"
+    "n8n-workflow": "*"
   },
-  "files": [
-    "dist"
-  ]
+  "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/sdk-trace-base": "^2.2.0"
+  }
 }

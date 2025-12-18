@@ -1,15 +1,45 @@
-# Testing n8n-nodes-memory Locally with Docker
+# n8n-nodes-memmachine
 
-This directory contains a distribution build of the n8n-nodes-memory package ready for testing with a local n8n instance.
+An n8n community node that integrates with the MemMachine API, enabling advanced conversational memory management in your n8n workflows.
 
-## Quick Start with Docker Compose
+## Nodes Overview
 
-### Prerequisites
+This package provides two n8n community nodes for MemMachine integration:
+
+- **Main Node** (`MemMachine Manager`)
+  - **Actions:**
+    1. `Store a message` — Save conversational messages to MemMachine
+    2. `Enrich with context` — Retrieve historical context from MemMachine and enrich AI agent responses
+- **AI Memory Node** (`MemMachine Memory`)
+  - Connects directly to the AI agent’s memory port in n8n workflows
+  - Enables advanced memory operations and seamless integration with AI agent tools for conversational context management
+
+## Installation
+
+### `Community Nodes`
+
+Follow the [installation guide](https://docs.n8n.io/integrations/community-nodes/installation/) in the n8n community nodes documentation.
+
+1. Go to **Settings > Community Nodes**.
+2. Select **Install**.
+3. Enter `@memmachine/n8n-nodes-memmachine` in **Enter npm package name**.
+4. Agree to the [risks](https://docs.n8n.io/integrations/community-nodes/risks/) of using community nodes: select **I understand the risks of installing unverified code from a public source**.
+5. Select **Install**.
+
+After installing the node, you can use it like any other node. n8n displays the node in search results in the **Nodes** panel.
+
+### `Docker Installation`
+
+This directory contains a distribution build of the n8n-nodes-memmachine package ready for testing with a local n8n instance.
+
+### Quick Start with Docker Compose
+
+#### Prerequisites
 
 - Docker and Docker Compose installed
 - **MemMachine running externally** (on host or separate Docker network)
 
-### Start n8n with the Memory Node
+#### Start n8n with the Memory Node
 
 ```bash
 # Start n8n and Jaeger
@@ -32,7 +62,7 @@ The stack includes:
 - **n8n** (localhost:5678) - Workflow automation with Memory node
 - **Jaeger** (localhost:16686) - Distributed tracing UI for observability
 
-### Configure MemMachine Connection
+#### Configure MemMachine Connection
 
 The MemMachine service must be running separately. Configure credentials in n8n:
 
@@ -51,9 +81,9 @@ The MemMachine service must be running separately. Configure credentials in n8n:
 - API Endpoint: `http://your-memmachine-host:8080`
 - API Key: (if authentication is enabled)
 
-### Alternative: Install as npm Package
+### `Local Install as npm Package`
 
-Instead of using Docker, you can install directly into a local n8n instance:
+Alternatively, you can install directly into a local n8n instance:
 
 ```bash
 # Link to local n8n
@@ -75,24 +105,24 @@ npm install -g .
 2. Go to **Credentials** → **New**
 3. Search for "MemMachine API"
 4. Configure:
-   - **API Endpoint**: `http://memmachine:8080` (Docker) or `http://localhost:8080` (local)
+   - **API Endpoint**: `http://memmachine:8080` (Docker) or `http://localhost:8080/api/v2` (local)
    - **API Key**: (optional, if your MemMachine requires authentication)
 5. Test and save
 
 ### Using the Memory Node
 
 1. Create a new workflow
-2. Add the **Memory** node
+2. Add the **MemMachine** node
 3. Select operation:
    - **Store**: Save conversation messages
    - **Enrich**: Retrieve historical context
-4. Configure session context:
-   - Group ID, Agent ID, User ID, Session ID
+4. Configure context:
+   - Organization ID, Project ID, Group ID, Agent ID, User ID, Session ID
 
 ## Files in This Directory
 
-- `package.json` - Cleaned package metadata (no devDependencies)
-- `nodes/` - Memory node implementation
+- `package.json` - Package metadata
+- `nodes/` - MemMachine nodes implementation
 - `credentials/` - MemMachine API credentials definition
 - `dist/` - Compiled JavaScript
 - `LICENSE` - MIT license
@@ -132,7 +162,7 @@ services:
     network_mode: host
 ```
 
-Then use `http://localhost:8080` as the MemMachine endpoint.
+Then use `http://localhost:8080/api/v2` as the MemMachine endpoint.
 
 ## Troubleshooting
 
@@ -231,6 +261,44 @@ npm publish
 
 # Or publish to private registry
 npm publish --registry https://your-registry.com
+```
+
+## Development
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Build the project:
+
+```bash
+npm run build
+```
+
+3. Build the project before publishing:
+
+```bash
+npm run prepublishOnly
+```
+
+4. Start Docker:
+
+```bash
+npm run docker:start
+```
+
+5. Stop Docker:
+
+```bash
+npm run docker:stop
+```
+
+6. View Docker logs:
+
+```bash
+npm run docker:logs
 ```
 
 ## Resources

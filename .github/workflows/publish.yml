@@ -1,6 +1,6 @@
 # GitHub Actions workflow for distribution repository
 # This file is automatically copied to the distribution during publishing
-# 
+#
 # Purpose: Automatically publish to npm when a version tag is pushed to the dist repo
 
 name: Publish to npm
@@ -8,47 +8,47 @@ name: Publish to npm
 on:
   push:
     tags:
-      - 'v*'  # Trigger on version tags like v1.0.0, v2.1.3, etc.
+      - 'v*' # Trigger on version tags like v1.0.0, v2.1.3, etc.
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    
+
     permissions:
       contents: write
-      id-token: write  # Required for npm provenance
-    
+      id-token: write # Required for npm provenance
+
     steps:
       - name: Checkout distribution repository
         uses: actions/checkout@v4
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
-      
+
       - name: Extract version from tag
         id: version
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Publishing version: $VERSION"
-      
+
       - name: Verify package.json version matches tag
         run: |
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
           TAG_VERSION="${{ steps.version.outputs.version }}"
-          
+
           if [ "$PACKAGE_VERSION" != "$TAG_VERSION" ]; then
             echo "❌ Version mismatch!"
             echo "   package.json: $PACKAGE_VERSION"
             echo "   Git tag:      $TAG_VERSION"
             exit 1
           fi
-          
+
           echo "✓ Version check passed: $PACKAGE_VERSION"
-      
+
       - name: Install dependencies (if any)
         run: |
           if [ -f "package-lock.json" ]; then
@@ -56,26 +56,26 @@ jobs:
           else
             echo "No package-lock.json, skipping npm ci"
           fi
-      
+
       - name: Create package tarball
         run: |
           npm pack
           echo "✓ Package created:"
           ls -lh *.tgz
-      
+
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           # Publish with provenance (requires id-token: write permission)
           npm publish --provenance --access public
-          
+
           echo "✓ Published to npm successfully"
           echo ""
           echo "Installation command:"
           PACKAGE_NAME=$(node -p "require('./package.json').name")
           echo "  npm install ${PACKAGE_NAME}@${{ steps.version.outputs.version }}"
-      
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
@@ -83,47 +83,47 @@ jobs:
           name: Release ${{ steps.version.outputs.version }}
           body: |
             ## Release ${{ steps.version.outputs.version }}
-            
+
             Published to npm: `npm install ${{ github.event.repository.name }}@${{ steps.version.outputs.version }}`
-            
+
             ### Installation
-            
+
             #### Community Nodes (Recommended)
-            
+
             1. Go to **Settings** > **Community Nodes** in your n8n instance
             2. Select **Install**
             3. Enter `${{ github.event.repository.name }}`
             4. Agree to risks and install
-            
+
             #### Manual Installation
-            
+
             ```bash
             cd ~/.n8n/nodes
             npm install ${{ github.event.repository.name }}@${{ steps.version.outputs.version }}
             ```
-            
+
             #### Docker
-            
+
             ```bash
             docker exec -it n8n npm install -g ${{ github.event.repository.name }}@${{ steps.version.outputs.version }}
             ```
-            
+
             Or use the included `docker-compose.yml` for local testing.
-            
+
             ### What's in this release
-            
+
             This distribution package includes:
             - Pre-built node and credential files
             - Docker Compose setup with n8n + Jaeger
             - Complete documentation
             - No development dependencies
-            
+
             See the README.md for complete usage instructions.
           draft: false
           prerelease: false
           files: |
             *.tgz
-      
+
       - name: Trigger documentation update (optional)
         if: success()
         run: |
