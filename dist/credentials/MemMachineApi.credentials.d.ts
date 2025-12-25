@@ -3,8 +3,8 @@ export declare class MemMachineApi implements ICredentialType {
     name: string;
     displayName: string;
     documentationUrl: string;
+    icon: "file:MemMachine.icon.svg";
     properties: INodeProperties[];
     authenticate: IAuthenticateGeneric;
     test: ICredentialTestRequest;
 }
-//# sourceMappingURL=MemMachineApi.credentials.d.ts.map

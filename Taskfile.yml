@@ -6,4 +6,3 @@ tasks:
     cmds:
       - npm pack
       - npm publish
-  
