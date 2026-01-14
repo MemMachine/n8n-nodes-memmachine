@@ -81,6 +81,7 @@ jobs:
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
+          append_body: true
           body: |
             ## Release v${{ steps.version.outputs.version }}
 
@@ -108,15 +109,10 @@ jobs:
             docker exec -it n8n npm install -g ${{ github.event.repository.name }}@${{ steps.version.outputs.version }}
             ```
 
-            Or use the included `docker-compose.yml` for local testing.
+            #### Local Docker Setup
+            Use the `docker-compose.yml` for local testing.
 
-            This distribution package includes:
-            - Pre-built node and credential files
-            - Docker Compose setup with n8n + Jaeger
-            - Complete documentation
-            - No development dependencies
-
-            See the README.md for complete usage instructions.
+            See the `README.md` for complete usage instructions.
           draft: false
           prerelease: false
           files: |
