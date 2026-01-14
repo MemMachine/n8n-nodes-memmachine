@@ -79,10 +79,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.ref }}
-          name: Release ${{ steps.version.outputs.version }}
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
           body: |
-            ## Release ${{ steps.version.outputs.version }}
+            ## Release v${{ steps.version.outputs.version }}
 
             Published to npm: `npm install ${{ github.event.repository.name }}@${{ steps.version.outputs.version }}`
 
@@ -110,8 +110,6 @@ jobs:
 
             Or use the included `docker-compose.yml` for local testing.
 
-            ### What's in this release
-
             This distribution package includes:
             - Pre-built node and credential files
             - Docker Compose setup with n8n + Jaeger
@@ -133,8 +131,3 @@ jobs:
           echo "  1. Verify package on npm: https://www.npmjs.com/package/${{ github.event.repository.name }}"
           echo "  2. Test installation: npm install ${{ github.event.repository.name }}@${{ steps.version.outputs.version }}"
           echo "  3. Update any documentation or announcement posts"
-
-# Note: This workflow requires the following secrets to be configured:
-# - NPM_TOKEN: npm authentication token with publish permissions
-#   Create at: https://www.npmjs.com/settings/[your-username]/tokens
-#   Add as repository secret: Settings > Secrets and variables > Actions > New repository secret
