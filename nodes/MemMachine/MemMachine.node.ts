@@ -112,6 +112,31 @@ export class MemMachine implements INodeType {
           "Project identifier for memory isolation. Projects are automatically created if they don't exist.",
         hint: 'Required for v2 API - all memories are stored within a project. Auto-created on first use with default configuration.',
       },
+      // Types of Memories
+      {
+        displayName: 'Memory Types',
+        name: 'memoryTypes',
+        type: 'multiOptions',
+        displayOptions: {
+          show: {
+            operation: ['store', 'enrich'],
+          },
+        },
+        options: [
+          {
+            name: 'Episodic',
+            value: 'episodic',
+            description: 'Episodic memories (conversation messages)',
+          },
+          {
+            name: 'Semantic',
+            value: 'semantic',
+            description: 'Semantic memories (profile facts)',
+          },
+        ],
+        default: ['episodic', 'semantic'],
+        required: true,
+      },
       // Store Operation Parameters
       {
         displayName: 'Producer',
@@ -168,19 +193,15 @@ export class MemMachine implements INodeType {
         },
         options: [
           {
-            name: 'Dialog',
-            value: 'dialog',
+            name: 'None',
+            value: '',
           },
           {
-            name: 'Summary',
-            value: 'summary',
-          },
-          {
-            name: 'Observation',
-            value: 'observation',
+            name: 'Message',
+            value: 'message',
           },
         ],
-        default: 'dialog',
+        default: '',
         description: 'Type of episode being stored',
       },
       {
@@ -225,31 +246,59 @@ export class MemMachine implements INodeType {
         description: 'Max number of results to return',
       },
       {
-        displayName: 'Filter by Session',
-        name: 'filterBySession',
-        type: 'boolean',
-        displayOptions: {
-          show: {
-            operation: ['enrich'],
-          },
-        },
-        default: true,
-        description: 'Whether to filter memories based on provided session criteria',
-      },
-      {
         displayName: 'Filter',
         name: 'filter',
-        type: 'json',
+        type: 'string',
+        typeOptions: {
+          rows: 3,
+        },
         displayOptions: {
           show: {
             operation: ['enrich'],
-            filterBySession: [true],
           },
         },
-        default: '{}',
-        description: 'Optional additional filter as JSON object for episodic/semantic memory',
+        default: '',
+        description: 'Optional filter for episodic/semantic memory',
+      },
+      {
+        displayName: 'Expand Context',
+        name: 'expandContext',
+        type: 'number',
+        displayOptions: {
+          show: {
+            operation: ['enrich'],
+          },
+        },
+        default: 0,
+        description: 'Extra episodes to add for context',
+      },
+      {
+        displayName: 'Score Threshold',
+        name: 'scoreThreshold',
+        type: 'number',
+        displayOptions: {
+          show: {
+            operation: ['enrich'],
+          },
+        },
+        default: -Infinity,
+        description: 'Minimum relevance score to include memory',
       },
       // Session Context Parameters (shared across modes)
+      {
+        displayName: 'Session ID',
+        name: 'sessionId',
+        type: 'string',
+        displayOptions: {
+          show: {
+            operation: ['store', 'enrich'],
+          },
+        },
+        default: '={{$json.sessionId}}',
+        required: true,
+        placeholder: 'session_id',
+        description: 'Session ID for memory context',
+      },
       {
         displayName: 'Group ID',
         name: 'groupId',
@@ -769,8 +818,11 @@ export class MemMachine implements INodeType {
             pairedItem: { item: i },
           });
         } else {
+          const memoryTypes = this.getNodeParameter('memoryTypes', i) as string[];
+
           // Build session context
           const session = {
+            session_id: this.getNodeParameter('sessionId', i) as string,
             group_id: this.getNodeParameter('groupId', i) as string,
             agent_id: (this.getNodeParameter('agentId', i) as string)
               .split(',')
@@ -778,7 +830,6 @@ export class MemMachine implements INodeType {
             user_id: (this.getNodeParameter('userId', i) as string)
               .split(',')
               .map((id) => id.trim()),
-            session_id: projectId, // Use projectId as session identifier
           };
 
           if (operation === 'store') {
@@ -838,12 +889,14 @@ export class MemMachine implements INodeType {
               body: {
                 org_id: orgId.trim(),
                 project_id: projectId.trim(),
+                types: memoryTypes || [],
                 messages: [
                   {
                     content: episodeContent,
                     producer,
                     produced_for: producedFor,
                     role: producer.includes('agent') ? 'assistant' : 'user',
+                    ...(episodeType ? { episode_type: episodeType } : {}),
                     metadata: {
                       session_id: session.session_id,
                       agent_id: Array.isArray(session.agent_id)
@@ -985,6 +1038,7 @@ export class MemMachine implements INodeType {
               attributes: {
                 'operation.type': 'enrich',
                 'session.id': session.session_id,
+                'group.id': session.group_id,
                 'user.id': Array.isArray(session.user_id)
                   ? session.user_id.join(',')
                   : session.user_id,
@@ -997,8 +1051,9 @@ export class MemMachine implements INodeType {
             // Enrich operation
             const query = this.getNodeParameter('query', i) as string;
             const limit = this.getNodeParameter('limit', i) as number;
-            const filterBySession = this.getNodeParameter('filterBySession', i, true) as boolean;
-            const filterStr = this.getNodeParameter('filter', i) as string;
+            const filter = this.getNodeParameter('filter', i) as string;
+            const expandContext = this.getNodeParameter('expandContext', i) as number;
+            const scoreThreshold = this.getNodeParameter('scoreThreshold', i) as number;
 
             // Get template parameters (US3)
             const enableTemplate = this.getNodeParameter('enableTemplate', i, true) as boolean;
@@ -1006,30 +1061,6 @@ export class MemMachine implements INodeType {
             const advancedOptions = this.getNodeParameter('advancedOptions', i, {}) as IDataObject;
             const historyCount = (advancedOptions.historyCount as number) || 5;
             const shortTermCount = (advancedOptions.shortTermCount as number) || 10;
-
-            // Build filter object
-            let filter: IDataObject = {};
-
-            // Add session_id filter if enabled
-            if (filterBySession) {
-              filter['metadata.session_id'] = session.session_id;
-            }
-
-            // Merge with additional custom filters
-            if (filterStr && filterStr.trim() !== '{}' && filterStr.trim() !== '') {
-              try {
-                const customFilter = JSON.parse(filterStr);
-                filter = { ...filter, ...customFilter };
-              } catch (error) {
-                throw new NodeOperationError(
-                  this.getNode(),
-                  `Invalid filter JSON: ${(error as Error).message}`,
-                  {
-                    itemIndex: i,
-                  },
-                );
-              }
-            }
 
             const credentials = await this.getCredentials('memMachineApi');
             const baseURL = credentials.apiEndpoint as string;
@@ -1039,11 +1070,11 @@ export class MemMachine implements INodeType {
               org_id: orgId.trim(),
               project_id: projectId.trim(),
               query: query || '', // Required field, use empty string if not provided
-              types: [], // Empty array to get all memory types (episodic + semantic)
-              top_k: limit,
-              filter: Object.entries(filter || {})
-                .map(([key, value]) => `${key}=${value}`)
-                .join(' AND '),
+              types: memoryTypes || [], // Empty array to get all memory types (episodic + semantic)
+              top_k: limit ?? 0,
+              ...(filter && filter.trim() !== '' ? { filter: filter.trim() } : {}),
+              expand_context: expandContext ?? 0,
+              score_threshold: scoreThreshold === -Infinity ? null : scoreThreshold,
             };
 
             const requestOptions: IHttpRequestOptions = {
@@ -1065,8 +1096,10 @@ export class MemMachine implements INodeType {
               'payload.project_id': projectId,
               'payload.query': query,
               'payload.top_k': limit,
-              'payload.types': JSON.stringify(['episodic']),
-              'payload.filter': Object.keys(filter).length > 0 ? JSON.stringify(filter) : '{}',
+              'payload.types': JSON.stringify(memoryTypes),
+              'payload.filter': filter,
+              'payload.expand_context': expandContext,
+              'payload.score_threshold': scoreThreshold,
             });
 
             // Add request send event with structured KV logs
@@ -1176,7 +1209,7 @@ export class MemMachine implements INodeType {
                   let content = '';
                   let producer = 'unknown';
                   let producedFor = 'unknown';
-                  let episodeType = 'dialog';
+                  let episodeType = '';
                   let timestamp = memory.created_at || new Date().toISOString();
                   let uuid = memory.id || memory.uid || '';
                   let metadata = {};
@@ -1193,7 +1226,7 @@ export class MemMachine implements INodeType {
                     content = memory.content;
                     producer = memory.producer_id || memory.producer || 'unknown';
                     producedFor = memory.produced_for_id || memory.produced_for || 'unknown';
-                    episodeType = memory.episode_type || 'message';
+                    episodeType = memory.episode_type || '';
                     metadata = memory.metadata || {};
                   }
 

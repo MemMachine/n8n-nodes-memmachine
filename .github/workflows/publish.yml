@@ -124,6 +124,6 @@ jobs:
           echo "✓ Release complete!"
           echo ""
           echo "Next steps:"
-          echo "  1. Verify package on npm: https://www.npmjs.com/package/${{ github.event.repository.name }}"
-          echo "  2. Test installation: npm install ${{ github.event.repository.name }}@${{ steps.version.outputs.version }}"
+          echo "  1. Verify package on npm: https://www.npmjs.com/package/@memmachine/${{ github.event.repository.name }}"
+          echo "  2. Test installation: npm install @memmachine/${{ github.event.repository.name }}@${{ steps.version.outputs.version }}"
           echo "  3. Update any documentation or announcement posts"
