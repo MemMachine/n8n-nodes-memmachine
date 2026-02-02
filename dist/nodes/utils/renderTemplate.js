@@ -66,7 +66,7 @@ function formatSemanticMemory(semanticMemory) {
 exports.formatSemanticMemory = formatSemanticMemory;
 function formatEpisodeSummary(episodeSummary) {
     if (episodeSummary.length === 0) {
-        return '';
+        return '*No episode summaries available*';
     }
     return episodeSummary
         .filter((summary) => summary && summary.trim() !== '')

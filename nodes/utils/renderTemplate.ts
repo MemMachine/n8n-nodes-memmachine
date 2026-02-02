@@ -164,7 +164,7 @@ export function formatSemanticMemory(semanticMemory: SemanticMemoryFeature[]): s
  */
 export function formatEpisodeSummary(episodeSummary: string[]): string {
   if (episodeSummary.length === 0) {
-    return '';
+    return '*No episode summaries available*';
   }
 
   return episodeSummary

@@ -86,6 +86,30 @@ class MemMachine {
                 hint: 'Required for v2 API - all memories are stored within a project. Auto-created on first use with default configuration.',
             },
             {
+                displayName: 'Memory Types',
+                name: 'memoryTypes',
+                type: 'multiOptions',
+                displayOptions: {
+                    show: {
+                        operation: ['store', 'enrich'],
+                    },
+                },
+                options: [
+                    {
+                        name: 'Episodic',
+                        value: 'episodic',
+                        description: 'Episodic memories (conversation messages)',
+                    },
+                    {
+                        name: 'Semantic',
+                        value: 'semantic',
+                        description: 'Semantic memories (profile facts)',
+                    },
+                ],
+                default: ['episodic', 'semantic'],
+                required: true,
+            },
+            {
                 displayName: 'Producer',
                 name: 'producer',
                 type: 'string',
@@ -140,19 +164,15 @@ class MemMachine {
                 },
                 options: [
                     {
-                        name: 'Dialog',
-                        value: 'dialog',
+                        name: 'None',
+                        value: '',
                     },
                     {
-                        name: 'Summary',
-                        value: 'summary',
-                    },
-                    {
-                        name: 'Observation',
-                        value: 'observation',
+                        name: 'Message',
+                        value: 'message',
                     },
                 ],
-                default: 'dialog',
+                default: '',
                 description: 'Type of episode being stored',
             },
             {
@@ -196,29 +216,57 @@ class MemMachine {
                 description: 'Max number of results to return',
             },
             {
-                displayName: 'Filter by Session',
-                name: 'filterBySession',
-                type: 'boolean',
-                displayOptions: {
-                    show: {
-                        operation: ['enrich'],
-                    },
-                },
-                default: true,
-                description: 'Whether to filter memories based on provided session criteria',
-            },
-            {
                 displayName: 'Filter',
                 name: 'filter',
-                type: 'json',
+                type: 'string',
+                typeOptions: {
+                    rows: 3,
+                },
                 displayOptions: {
                     show: {
                         operation: ['enrich'],
-                        filterBySession: [true],
                     },
                 },
-                default: '{}',
-                description: 'Optional additional filter as JSON object for episodic/semantic memory',
+                default: '',
+                description: 'Optional filter for episodic/semantic memory',
+            },
+            {
+                displayName: 'Expand Context',
+                name: 'expandContext',
+                type: 'number',
+                displayOptions: {
+                    show: {
+                        operation: ['enrich'],
+                    },
+                },
+                default: 0,
+                description: 'Extra episodes to add for context',
+            },
+            {
+                displayName: 'Score Threshold',
+                name: 'scoreThreshold',
+                type: 'number',
+                displayOptions: {
+                    show: {
+                        operation: ['enrich'],
+                    },
+                },
+                default: -Infinity,
+                description: 'Minimum relevance score to include memory',
+            },
+            {
+                displayName: 'Session ID',
+                name: 'sessionId',
+                type: 'string',
+                displayOptions: {
+                    show: {
+                        operation: ['store', 'enrich'],
+                    },
+                },
+                default: '={{$json.sessionId}}',
+                required: true,
+                placeholder: 'session_id',
+                description: 'Session ID for memory context',
             },
             {
                 displayName: 'Group ID',
@@ -665,7 +713,9 @@ class MemMachine {
                     });
                 }
                 else {
+                    const memoryTypes = this.getNodeParameter('memoryTypes', i);
                     const session = {
+                        session_id: this.getNodeParameter('sessionId', i),
                         group_id: this.getNodeParameter('groupId', i),
                         agent_id: this.getNodeParameter('agentId', i)
                             .split(',')
@@ -673,7 +723,6 @@ class MemMachine {
                         user_id: this.getNodeParameter('userId', i)
                             .split(',')
                             .map((id) => id.trim()),
-                        session_id: projectId,
                     };
                     if (operation === 'store') {
                         traceId = cloudTracer.startOperation('memory', 'store', {
@@ -721,12 +770,14 @@ class MemMachine {
                             body: {
                                 org_id: orgId.trim(),
                                 project_id: projectId.trim(),
+                                types: memoryTypes || [],
                                 messages: [
                                     {
                                         content: episodeContent,
                                         producer,
                                         produced_for: producedFor,
                                         role: producer.includes('agent') ? 'assistant' : 'user',
+                                        ...(episodeType ? { episode_type: episodeType } : {}),
                                         metadata: {
                                             session_id: session.session_id,
                                             agent_id: Array.isArray(session.agent_id)
@@ -834,6 +885,7 @@ class MemMachine {
                             attributes: {
                                 'operation.type': 'enrich',
                                 'session.id': session.session_id,
+                                'group.id': session.group_id,
                                 'user.id': Array.isArray(session.user_id)
                                     ? session.user_id.join(',')
                                     : session.user_id,
@@ -844,39 +896,25 @@ class MemMachine {
                         });
                         const query = this.getNodeParameter('query', i);
                         const limit = this.getNodeParameter('limit', i);
-                        const filterBySession = this.getNodeParameter('filterBySession', i, true);
-                        const filterStr = this.getNodeParameter('filter', i);
+                        const filter = this.getNodeParameter('filter', i);
+                        const expandContext = this.getNodeParameter('expandContext', i);
+                        const scoreThreshold = this.getNodeParameter('scoreThreshold', i);
                         const enableTemplate = this.getNodeParameter('enableTemplate', i, true);
                         const contextTemplate = this.getNodeParameter('contextTemplate', i);
                         const advancedOptions = this.getNodeParameter('advancedOptions', i, {});
                         const historyCount = advancedOptions.historyCount || 5;
                         const shortTermCount = advancedOptions.shortTermCount || 10;
-                        let filter = {};
-                        if (filterBySession) {
-                            filter['metadata.session_id'] = session.session_id;
-                        }
-                        if (filterStr && filterStr.trim() !== '{}' && filterStr.trim() !== '') {
-                            try {
-                                const customFilter = JSON.parse(filterStr);
-                                filter = { ...filter, ...customFilter };
-                            }
-                            catch (error) {
-                                throw new n8n_workflow_1.NodeOperationError(this.getNode(), `Invalid filter JSON: ${error.message}`, {
-                                    itemIndex: i,
-                                });
-                            }
-                        }
                         const credentials = await this.getCredentials('memMachineApi');
                         const baseURL = credentials.apiEndpoint;
                         const searchBody = {
                             org_id: orgId.trim(),
                             project_id: projectId.trim(),
                             query: query || '',
-                            types: [],
-                            top_k: limit,
-                            filter: Object.entries(filter || {})
-                                .map(([key, value]) => `${key}=${value}`)
-                                .join(' AND '),
+                            types: memoryTypes || [],
+                            top_k: limit ?? 0,
+                            ...(filter && filter.trim() !== '' ? { filter: filter.trim() } : {}),
+                            expand_context: expandContext ?? 0,
+                            score_threshold: scoreThreshold === -Infinity ? null : scoreThreshold,
                         };
                         const requestOptions = {
                             method: 'POST',
@@ -894,8 +932,10 @@ class MemMachine {
                             'payload.project_id': projectId,
                             'payload.query': query,
                             'payload.top_k': limit,
-                            'payload.types': JSON.stringify(['episodic']),
-                            'payload.filter': Object.keys(filter).length > 0 ? JSON.stringify(filter) : '{}',
+                            'payload.types': JSON.stringify(memoryTypes),
+                            'payload.filter': filter,
+                            'payload.expand_context': expandContext,
+                            'payload.score_threshold': scoreThreshold,
                         });
                         const requestHeaders = requestOptions.headers || {};
                         const headerLogKV = {};
@@ -969,7 +1009,7 @@ class MemMachine {
                                     let content = '';
                                     let producer = 'unknown';
                                     let producedFor = 'unknown';
-                                    let episodeType = 'dialog';
+                                    let episodeType = '';
                                     let timestamp = memory.created_at || new Date().toISOString();
                                     let uuid = memory.id || memory.uid || '';
                                     let metadata = {};
@@ -983,7 +1023,7 @@ class MemMachine {
                                         content = memory.content;
                                         producer = memory.producer_id || memory.producer || 'unknown';
                                         producedFor = memory.produced_for_id || memory.produced_for || 'unknown';
-                                        episodeType = memory.episode_type || 'message';
+                                        episodeType = memory.episode_type || '';
                                         metadata = memory.metadata || {};
                                     }
                                     if (content && content.trim() !== '') {
